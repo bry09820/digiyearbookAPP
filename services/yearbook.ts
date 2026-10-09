@@ -179,7 +179,66 @@ function firstAlbumCover(album: Record<string, unknown>): string | null {
 export const yearbookService = {
   async getCurrentUser() {
     const { data } = await api.get('/auth/me');
-    return (data as { user?: unknown })?.user ?? data;
+    // Normalize Laravel shapes: bare user, `{ user }`, or `{ data: user }`.
+    const payload = unwrap(data) as Record<string, unknown> | unknown;
+    let user: unknown = data;
+    if (payload && typeof payload === 'object') {
+      const obj = payload as Record<string, unknown>;
+      user = obj.user && typeof obj.user === 'object' ? obj.user : obj;
+    } else if (data && typeof data === 'object' && (data as { user?: unknown }).user) {
+      user = (data as { user: unknown }).user;
+    }
+
+    // Guarantee profile_visibility is present for settings screens.
+    // Older /auth/me payloads omitted it, which caused Private → Public on reopen.
+    if (user && typeof user === 'object') {
+      const raw = user as Record<string, unknown>;
+      const nested =
+        (raw.student_record as Record<string, unknown> | undefined) ||
+        (raw.studentRecord as Record<string, unknown> | undefined) ||
+        (raw.student as Record<string, unknown> | undefined) ||
+        {};
+      const visibilityRaw = firstText(
+        raw.profile_visibility,
+        raw.visibility,
+        raw.privacy,
+        nested.profile_visibility,
+        nested.visibility,
+      )
+        .toLowerCase()
+        .trim();
+      let normalized: 'public' | 'batchmates' | 'private' | undefined;
+      if (
+        visibilityRaw === 'alumni_only' ||
+        visibilityRaw === 'alumni' ||
+        visibilityRaw === 'batch' ||
+        visibilityRaw === 'batchmate'
+      ) {
+        normalized = 'batchmates';
+      } else if (
+        visibilityRaw === 'only_me' ||
+        visibilityRaw === 'me' ||
+        visibilityRaw === 'hidden' ||
+        visibilityRaw === 'none'
+      ) {
+        normalized = 'private';
+      } else if (
+        visibilityRaw === 'public' ||
+        visibilityRaw === 'batchmates' ||
+        visibilityRaw === 'private'
+      ) {
+        normalized = visibilityRaw;
+      }
+      if (normalized) {
+        return {
+          ...raw,
+          profile_visibility: normalized,
+          visibility: normalized,
+        };
+      }
+    }
+
+    return user;
   },
 
   async getAnnouncements(): Promise<AnnouncementItem[]> {
@@ -498,6 +557,43 @@ export const yearbookService = {
     return data;
   },
 
+  /**
+   * Matches web `POST /profile/visibility` — public | batchmates | private.
+   * Returns the confirmed visibility from the API when available.
+   */
+  async updateVisibility(visibility: 'public' | 'batchmates' | 'private'): Promise<{
+    visibility: 'public' | 'batchmates' | 'private';
+    raw: unknown;
+  }> {
+    const { data } = await api.post('/profile/visibility', { visibility });
+    const payload =
+      data && typeof data === 'object' ? (data as Record<string, unknown>) : {};
+    const nestedUser =
+      payload.user && typeof payload.user === 'object'
+        ? (payload.user as Record<string, unknown>)
+        : null;
+    const confirmed = firstText(
+      payload.profile_visibility,
+      payload.visibility,
+      nestedUser?.profile_visibility,
+      nestedUser?.visibility,
+      visibility,
+    );
+    const normalized =
+      confirmed === 'alumni_only'
+        ? 'batchmates'
+        : confirmed === 'public' || confirmed === 'batchmates' || confirmed === 'private'
+          ? confirmed
+          : visibility;
+    return { visibility: normalized, raw: data };
+  },
+
+  /** Matches web `POST /profile/motto` — yearbook quote (max 255). */
+  async updateMotto(motto: string | null) {
+    const { data } = await api.post('/profile/motto', { motto });
+    return data;
+  },
+
   async updatePassword(payload: {
     current_password: string;
     password: string;
@@ -509,6 +605,58 @@ export const yearbookService = {
 
   async updateAcademic(payload: Record<string, unknown>) {
     const { data } = await api.put('/profile/academic', payload);
+    return data;
+  },
+
+  /**
+   * Persist achievements list — matches web `PUT /profile/achievements`.
+   * Pass `id: null` for new rows; real DB ids for existing ones.
+   */
+  async updateAchievements(
+    achievements: Array<{
+      id: string | number | null;
+      title: string;
+      subtitle?: string;
+      type?: string;
+    }>,
+  ) {
+    const { data } = await api.put('/profile/achievements', { achievements });
+    return data;
+  },
+
+  /** Alumni career profile — `GET /alumni/me`. */
+  async getAlumniCareer(): Promise<{
+    job_title: string;
+    company: string;
+    location: string;
+    field: string;
+    bio: string;
+  }> {
+    const { data } = await api.get('/alumni/me');
+    const payload = (unwrap(data) || data) as Record<string, unknown>;
+    const nested = (payload.data as Record<string, unknown> | undefined) ?? payload;
+    const career =
+      (nested.career as Record<string, unknown> | undefined) ??
+      (payload.career as Record<string, unknown> | undefined) ??
+      {};
+    return {
+      job_title: asText(career.job_title),
+      company: asText(career.company),
+      location: asText(career.location),
+      field: asText(career.field),
+      bio: asText(career.bio),
+    };
+  },
+
+  /** Alumni career update — `POST /alumni/career`. */
+  async updateCareer(payload: {
+    job_title?: string | null;
+    company?: string | null;
+    location?: string | null;
+    field?: string | null;
+    bio?: string | null;
+  }) {
+    const { data } = await api.post('/alumni/career', payload);
     return data;
   },
 

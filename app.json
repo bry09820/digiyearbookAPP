@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "capstoneapp",
+    "name": "NU Lipa Yearbook",
     "slug": "capstoneapp",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -10,11 +10,13 @@
     "newArchEnabled": true,
     "ios": {
       "supportsTablet": true,
+      "bundleIdentifier": "edu.nulipa.yearbook",
       "infoPlist": {
         "NSFaceIDUsageDescription": "NU Lipa Yearbook uses Face ID so you can sign in quickly and securely."
       }
     },
     "android": {
+      "package": "edu.nulipa.yearbook",
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
@@ -54,6 +56,14 @@
         {
           "photosPermission": "Allow NU Lipa Yearbook to access your photos so you can update your profile picture.",
           "cameraPermission": "Allow NU Lipa Yearbook to use your camera for profile pictures."
+        }
+      ],
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow NU Lipa Yearbook to use your camera for face recognition sign-in.",
+          "microphonePermission": false,
+          "recordAudioAndroid": false
         }
       ]
     ],

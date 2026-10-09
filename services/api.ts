@@ -16,7 +16,8 @@ async function handleUnauthorized(): Promise<void> {
   handlingUnauthorized = true;
   try {
     await clearAuthStorage();
-    router.replace('/login');
+    // Signed-out users land on Welcome before login/dashboard.
+    router.replace('/');
   } catch {
     // Ignore redirect / storage failures.
   } finally {
@@ -26,9 +27,11 @@ async function handleUnauthorized(): Promise<void> {
   }
 }
 
-/** Auth routes under the Laravel `/api` prefix. */
+/** Auth routes under the Laravel `/api` prefix. No trailing slashes (avoids 301→GET 405). */
 export const AUTH_ENDPOINTS = {
   login: '/auth/login',
+  /** Camera face match — POST { image_base64, email?, student_id? } */
+  faceLogin: '/auth/face-login',
   register: '/auth/register',
   verifyStudent: '/auth/verify-student',
   sendOtp: '/auth/otp/send',
@@ -36,6 +39,21 @@ export const AUTH_ENDPOINTS = {
   logout: '/auth/logout',
   me: '/auth/me',
 } as const;
+
+/** Face recognition routes (authenticated Sanctum). No trailing slashes. */
+export const FACE_ENDPOINTS = {
+  /** Real-time register/sync: POST { image_base64, student_id? } */
+  sync: '/face/sync',
+} as const;
+
+/** Strip trailing slashes so axios never hits a 301 that turns POST into GET. */
+export function apiPath(path: string): string {
+  if (!path) return path;
+  if (/^https?:\/\//i.test(path)) {
+    return path.replace(/\/+$/, '');
+  }
+  return `/${path.replace(/^\/+/, '').replace(/\/+$/, '')}`;
+}
 
 export type ApiErrorKind = 'timeout' | 'network' | 'http' | 'unknown';
 
@@ -91,10 +109,11 @@ export function classifyAxiosError(error: AxiosError<ApiErrorBody>): ApiClientEr
 
   if (isTimeout) {
     return new ApiClientError({
-      message:
-        `Connection timed out while reaching ${url}. ` +
-        'Make sure Laravel is running (`php artisan serve --host=0.0.0.0 --port=8000`) ' +
-        'and this device is on the same Wi‑Fi.',
+      message: __DEV__
+        ? `Connection timed out while reaching ${url}. ` +
+          'Make sure Laravel is running (`php artisan serve --host=0.0.0.0 --port=8000`) ' +
+          'and this device is on the same Wi‑Fi.'
+        : 'The request timed out. Please check your connection and try again.',
       kind: 'timeout',
       status,
       url,
@@ -106,9 +125,10 @@ export function classifyAxiosError(error: AxiosError<ApiErrorBody>): ApiClientEr
 
   if (!error.response) {
     return new ApiClientError({
-      message:
-        `Cannot reach the API at ${baseURL}. ` +
-        'Check Wi‑Fi, firewall, and that the server accepts LAN connections.',
+      message: __DEV__
+        ? `Cannot reach the API at ${baseURL}. ` +
+          'Check Wi‑Fi, firewall, and that the server accepts LAN connections.'
+        : 'Unable to reach the server. Please check your internet connection and try again.',
       kind: 'network',
       url,
       baseURL,
@@ -126,7 +146,7 @@ export function classifyAxiosError(error: AxiosError<ApiErrorBody>): ApiClientEr
     null;
 
   return new ApiClientError({
-    message: bodyMessage || `Request failed (${status}) for ${url}.`,
+    message: bodyMessage || (__DEV__ ? `Request failed (${status}) for ${url}.` : `Request failed (${status}).`),
     kind: 'http',
     status,
     url,
@@ -138,11 +158,10 @@ export function classifyAxiosError(error: AxiosError<ApiErrorBody>): ApiClientEr
 
 /**
  * Shared Axios client for the Laravel backend.
- * Base URL should look like: http://<LAN-IP>:8000/api
- * Registration posts to: {baseURL}/auth/register
+ * Base URL comes from EXPO_PUBLIC_API_URL (see constants/config.ts).
  */
 const api: AxiosInstance = axios.create({
-  baseURL: API_BASE_URL,
+  baseURL: API_BASE_URL.replace(/\/+$/, ''),
   timeout: API_TIMEOUT_MS,
   headers: {
     Accept: 'application/json',
@@ -150,25 +169,57 @@ const api: AxiosInstance = axios.create({
   },
   // Avoid throwing on non-2xx so we can normalize uniformly in the interceptor.
   validateStatus: (status) => status >= 200 && status < 300,
+  // Do not follow redirects — a 301/302 can convert POST into GET (405 on Laravel).
+  maxRedirects: 0,
 });
 
 api.interceptors.request.use(async (config) => {
   try {
-    const token = await getToken();
+    if (typeof config.url === 'string' && config.url.length > 0) {
+      config.url = apiPath(config.url);
+    }
+    if (typeof config.baseURL === 'string') {
+      config.baseURL = config.baseURL.replace(/\/+$/, '');
+    }
+
+    const token = (await getToken())?.trim();
     if (token) {
-      config.headers.Authorization = `Bearer ${token}`;
+      const bearer = `Bearer ${token}`;
+      // AxiosHeaders (.set) and plain object both need coverage.
+      const headers = config.headers;
+      if (headers && typeof (headers as { set?: unknown }).set === 'function') {
+        (headers as { set: (k: string, v: string) => void }).set('Authorization', bearer);
+      } else if (headers && typeof headers === 'object') {
+        (headers as Record<string, string>).Authorization = bearer;
+      } else {
+        config.headers = { Authorization: bearer } as typeof config.headers;
+      }
     }
 
     const tempSession = await getTempSession();
     if (tempSession) {
-      config.headers['Temporary-Session-ID'] = tempSession;
+      const headers = config.headers;
+      if (headers && typeof (headers as { set?: unknown }).set === 'function') {
+        (headers as { set: (k: string, v: string) => void }).set(
+          'Temporary-Session-ID',
+          tempSession,
+        );
+      } else if (headers && typeof headers === 'object') {
+        (headers as Record<string, string>)['Temporary-Session-ID'] = tempSession;
+      }
     }
 
     // Let RN/axios set multipart boundary for FormData uploads.
     if (typeof FormData !== 'undefined' && config.data instanceof FormData) {
       if (config.headers && typeof config.headers === 'object') {
-        delete (config.headers as Record<string, unknown>)['Content-Type'];
-        delete (config.headers as Record<string, unknown>)['content-type'];
+        const headers = config.headers as { delete?: (k: string) => void } & Record<string, unknown>;
+        if (typeof headers.delete === 'function') {
+          headers.delete('Content-Type');
+          headers.delete('content-type');
+        } else {
+          delete headers['Content-Type'];
+          delete headers['content-type'];
+        }
       }
     }
   } catch {
@@ -197,7 +248,15 @@ api.interceptors.response.use(
   async (error: unknown) => {
     if (axios.isAxiosError(error)) {
       if (error.response?.status === 401) {
-        await handleUnauthorized();
+        const requestUrl = `${error.config?.baseURL ?? ''}${error.config?.url ?? ''}`;
+        // Public auth challenges (wrong face / credentials) must not clear storage.
+        const isPublicAuthChallenge =
+          /\/auth\/(login|face-login|register|otp\/|forgot-password|reset-password)/i.test(
+            requestUrl,
+          );
+        if (!isPublicAuthChallenge) {
+          await handleUnauthorized();
+        }
       }
 
       const normalized = classifyAxiosError(error);

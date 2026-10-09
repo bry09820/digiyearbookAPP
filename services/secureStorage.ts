@@ -1,7 +1,11 @@
 import * as SecureStore from 'expo-secure-store';
 import { Platform } from 'react-native';
 
-/** Thin SecureStore / localStorage wrapper shared by auth + biometric helpers. */
+const SECURE_OPTIONS: SecureStore.SecureStoreOptions = {
+  keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
+};
+
+/** Thin SecureStore / localStorage wrapper shared by auth helpers. */
 export async function setSecureItem(key: string, value: string): Promise<void> {
   if (Platform.OS === 'web') {
     if (typeof localStorage !== 'undefined') {
@@ -9,7 +13,7 @@ export async function setSecureItem(key: string, value: string): Promise<void> {
     }
     return;
   }
-  await SecureStore.setItemAsync(key, value);
+  await SecureStore.setItemAsync(key, value, SECURE_OPTIONS);
 }
 
 export async function getSecureItem(key: string): Promise<string | null> {
@@ -19,7 +23,7 @@ export async function getSecureItem(key: string): Promise<string | null> {
     }
     return null;
   }
-  return SecureStore.getItemAsync(key);
+  return SecureStore.getItemAsync(key, SECURE_OPTIONS);
 }
 
 export async function deleteSecureItem(key: string): Promise<void> {
@@ -29,5 +33,5 @@ export async function deleteSecureItem(key: string): Promise<void> {
     }
     return;
   }
-  await SecureStore.deleteItemAsync(key);
+  await SecureStore.deleteItemAsync(key, SECURE_OPTIONS);
 }

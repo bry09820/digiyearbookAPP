@@ -16,6 +16,7 @@ import * as Haptics from 'expo-haptics';
 import { Stack, useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { FontAwesome, MaterialIcons } from '@expo/vector-icons';
+import { FaceLoginCameraModal } from '@/components/FaceLoginCameraModal';
 import { getApiErrorMessage } from '@/services/api';
 import { authService } from '@/services/auth';
 import {
@@ -30,6 +31,8 @@ export default function LoginPage() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [biometricLoading, setBiometricLoading] = useState(false);
+  const [faceCameraVisible, setFaceCameraVisible] = useState(false);
+  const [faceVerifying, setFaceVerifying] = useState(false);
   const [biometricAvailable, setBiometricAvailable] = useState(false);
   const [biometricLabel, setBiometricLabel] = useState('Biometrics');
   const [biometricReady, setBiometricReady] = useState(false);
@@ -230,6 +233,57 @@ export default function LoginPage() {
     }
   };
 
+  const openFaceRecognition = () => {
+    setError(null);
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setFaceCameraVisible(true);
+  };
+
+  const closeFaceRecognition = () => {
+    if (faceVerifying) return;
+    setFaceCameraVisible(false);
+  };
+
+  const handleFaceCapture = async (imageBase64: string) => {
+    setFaceVerifying(true);
+    setError(null);
+
+    const userEmail = email.trim().toLowerCase();
+
+    try {
+      const result = await authService.loginWithFace({
+        image_base64: imageBase64,
+        email: userEmail || undefined,
+      });
+
+      setFaceCameraVisible(false);
+
+      const resolvedEmail =
+        userEmail ||
+        ('user' in result && result.user?.email ? result.user.email : '');
+
+      await navigateAfterAuth(result, resolvedEmail);
+    } catch (err) {
+      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      Alert.alert(
+        'Face recognition failed',
+        getApiErrorMessage(
+          err,
+          'Face not recognized. Please try again or sign in with email and password.',
+        ),
+        [
+          { text: 'Try again', style: 'cancel' },
+          {
+            text: 'Back to Sign In',
+            onPress: () => setFaceCameraVisible(false),
+          },
+        ],
+      );
+    } finally {
+      setFaceVerifying(false);
+    }
+  };
+
   const busy = loading || biometricLoading;
 
   return (
@@ -312,6 +366,22 @@ export default function LoginPage() {
               )}
             </TouchableOpacity>
 
+            <TouchableOpacity
+              style={[styles.faceRecognitionButton, busy ? styles.buttonDisabled : null]}
+              onPress={openFaceRecognition}
+              disabled={busy}
+              accessibilityRole="button"
+              accessibilityLabel="Sign in with Face Recognition"
+            >
+              <MaterialIcons
+                name="face"
+                size={24}
+                color="#35408E"
+                style={styles.biometricIcon}
+              />
+              <Text style={styles.biometricButtonText}>Sign in with Face Recognition</Text>
+            </TouchableOpacity>
+
             {biometricAvailable ? (
               <>
                 <View style={styles.dividerRow}>
@@ -369,8 +439,26 @@ export default function LoginPage() {
               <Text style={styles.footerLink}>Register</Text>
             </TouchableOpacity>
           </View>
+
+          <TouchableOpacity
+            disabled={busy}
+            style={styles.welcomeLink}
+            onPress={() => {
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              router.replace('/');
+            }}
+          >
+            <Text style={styles.welcomeLinkText}>Back to Welcome</Text>
+          </TouchableOpacity>
         </ScrollView>
       </KeyboardAvoidingView>
+
+      <FaceLoginCameraModal
+        visible={faceCameraVisible}
+        verifying={faceVerifying}
+        onCapture={handleFaceCapture}
+        onClose={closeFaceRecognition}
+      />
     </SafeAreaView>
   );
 }
@@ -472,6 +560,18 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     color: '#35408E',
   },
+  faceRecognitionButton: {
+    height: 60,
+    backgroundColor: '#F0F2F8',
+    borderRadius: 16,
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginTop: 12,
+    borderWidth: 1,
+    borderColor: '#D5DBF0',
+    paddingHorizontal: 16,
+  },
   dividerRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -526,5 +626,15 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: 'bold',
     color: '#35408E',
+  },
+  welcomeLink: {
+    marginTop: 20,
+    alignItems: 'center',
+    paddingVertical: 8,
+  },
+  welcomeLinkText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#8E8E93',
   },
 });

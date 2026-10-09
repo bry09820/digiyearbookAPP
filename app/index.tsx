@@ -58,7 +58,7 @@ export default function LandingPage() {
                 router.push('/login');
               }}
             >
-              <Text style={styles.loginText}>I already have an account</Text>
+              <Text style={styles.loginText}>Already have an account</Text>
             </TouchableOpacity>
           </View>
         </SafeAreaView>

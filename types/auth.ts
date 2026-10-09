@@ -1,3 +1,5 @@
+export type ProfileVisibility = 'public' | 'batchmates' | 'private' | 'alumni_only';
+
 export type User = {
   id: number;
   name?: string;
@@ -7,6 +9,11 @@ export type User = {
   student_id?: string;
   course?: string;
   graduation_year?: number;
+  batch?: string;
+  motto?: string;
+  bio?: string;
+  role?: string;
+  profile_visibility?: ProfileVisibility;
   email_verified?: boolean;
   email_verified_at?: string | null;
   consent_accepted?: boolean;
@@ -35,6 +42,16 @@ export type User = {
 export type LoginCredentials = {
   email: string;
   password: string;
+};
+
+/** Payload for camera-based face recognition sign-in. */
+export type FaceLoginPayload = {
+  /** Raw JPEG base64 string (no `data:image/...` prefix). */
+  image_base64: string;
+  /** Optional email hint when the user already filled the login form. */
+  email?: string;
+  /** Optional student number when known (login form / prior session). */
+  student_id?: string;
 };
 
 /** Matches Laravel AuthController@register validation rules. */

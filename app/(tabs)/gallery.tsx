@@ -1,5 +1,16 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, SafeAreaView, Modal, Dimensions, FlatList, ActivityIndicator } from 'react-native';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  ScrollView,
+  TouchableOpacity,
+  SafeAreaView,
+  Modal,
+  Dimensions,
+  FlatList,
+  ActivityIndicator,
+} from 'react-native';
 import { Image } from 'expo-image';
 import { StatusBar } from 'expo-status-bar';
 import { FontAwesome } from '@expo/vector-icons';
@@ -7,13 +18,25 @@ import * as Haptics from 'expo-haptics';
 import yearbookService, { GalleryAlbum } from '@/services/yearbook';
 import { getApiErrorMessage } from '@/services/api';
 import { ScreenHeader } from '@/components/ScreenHeader';
+import {
+  SummaryStats,
+  SearchField,
+  FilterPills,
+  premiumStyles,
+  type FilterPill,
+} from '@/components/premium';
+import { asText } from '@/utils/text';
 
 const { height } = Dimensions.get('window');
+
+type GalleryFilter = 'All' | 'Recent' | 'Large';
 
 export default function GalleryScreen() {
   const [albums, setAlbums] = useState<GalleryAlbum[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [search, setSearch] = useState('');
+  const [activeFilter, setActiveFilter] = useState<GalleryFilter>('All');
   const [selectedAlbum, setSelectedAlbum] = useState<GalleryAlbum | null>(null);
   const [isViewerVisible, setIsViewerVisible] = useState(false);
   const [isGridVisible, setIsGridVisible] = useState(false);
@@ -35,8 +58,47 @@ export default function GalleryScreen() {
   }, []);
 
   useEffect(() => {
-    loadAlbums();
+    void loadAlbums();
   }, [loadAlbums]);
+
+  const filterPills: FilterPill[] = [
+    { key: 'all', label: 'All', value: 'All' },
+    { key: 'recent', label: 'Recent', value: 'Recent' },
+    { key: 'large', label: 'Large albums', value: 'Large' },
+  ];
+
+  const filteredAlbums = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    let list = albums;
+
+    if (activeFilter === 'Large') {
+      list = list.filter((a) => Number(a.photos) >= 8);
+    } else if (activeFilter === 'Recent') {
+      list = [...list].slice(0, Math.max(6, Math.ceil(list.length / 2)));
+    }
+
+    if (!q) return list;
+    return list.filter(
+      (album) =>
+        asText(album.title).toLowerCase().includes(q) ||
+        asText(album.time).toLowerCase().includes(q) ||
+        asText(album.description).toLowerCase().includes(q),
+    );
+  }, [albums, search, activeFilter]);
+
+  const stats = useMemo(() => {
+    const totalPhotos = albums.reduce((sum, a) => sum + (Number(a.photos) || 0), 0);
+    return [
+      { key: 'albums', label: 'Albums', value: albums.length },
+      { key: 'photos', label: 'Photos', value: totalPhotos },
+      {
+        key: 'showing',
+        label: 'Showing',
+        value: filteredAlbums.length,
+        hint: activeFilter !== 'All' ? activeFilter : undefined,
+      },
+    ];
+  }, [albums, filteredAlbums.length, activeFilter]);
 
   const openViewer = async (album: GalleryAlbum) => {
     setSelectedAlbum(album);
@@ -79,35 +141,53 @@ export default function GalleryScreen() {
         : [];
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={premiumStyles.screen}>
       <StatusBar style="light" />
+      <ScreenHeader
+        title="Gallery"
+        subtitle="Campus memories & albums"
+        icon="image"
+      />
 
-      <ScreenHeader title="Gallery" />
+      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={premiumStyles.scrollContent}>
+        <SummaryStats items={stats} />
 
-      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
+        <SearchField
+          value={search}
+          onChangeText={setSearch}
+          placeholder="Search albums…"
+        />
+
+        <FilterPills
+          items={filterPills}
+          activeValue={activeFilter}
+          onChange={(value) => setActiveFilter(value as GalleryFilter)}
+        />
+
         {loading ? (
-          <View style={styles.centerContainer}>
+          <View style={premiumStyles.centerState}>
             <ActivityIndicator size="large" color="#35408E" />
+            <Text style={premiumStyles.mutedText}>Loading gallery…</Text>
           </View>
         ) : error ? (
-          <View style={styles.centerContainer}>
-            <Text style={styles.errorText}>{error}</Text>
-            <TouchableOpacity style={styles.retryButton} onPress={loadAlbums}>
-              <Text style={styles.retryButtonText}>Retry</Text>
+          <View style={premiumStyles.centerState}>
+            <Text style={premiumStyles.errorText}>{error}</Text>
+            <TouchableOpacity style={premiumStyles.primaryButton} onPress={() => void loadAlbums()}>
+              <Text style={premiumStyles.primaryButtonText}>Retry</Text>
             </TouchableOpacity>
           </View>
-        ) : albums.length === 0 ? (
-          <View style={styles.centerContainer}>
-            <Text style={styles.emptyText}>No albums found.</Text>
+        ) : filteredAlbums.length === 0 ? (
+          <View style={premiumStyles.centerState}>
+            <Text style={premiumStyles.mutedText}>No albums found.</Text>
           </View>
         ) : (
-          albums.map((album) => (
+          filteredAlbums.map((album) => (
             <TouchableOpacity
               key={String(album.id)}
               style={styles.albumCard}
               onPress={() => {
-                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                openViewer(album);
+                void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                void openViewer(album);
               }}
               activeOpacity={0.9}
             >
@@ -117,11 +197,11 @@ export default function GalleryScreen() {
                     source={album.image}
                     style={styles.albumImage}
                     contentFit="cover"
-                    transition={500}
+                    transition={400}
                   />
                 ) : (
                   <View style={[styles.albumImage, styles.albumImagePlaceholder]}>
-                    <FontAwesome name="image" size={40} color="#8E8E93" />
+                    <FontAwesome name="image" size={36} color="#8E8E93" />
                   </View>
                 )}
                 <View style={styles.photoCountBadge}>
@@ -130,8 +210,10 @@ export default function GalleryScreen() {
               </View>
               <View style={styles.info}>
                 <View style={styles.titleRow}>
-                  <Text style={styles.albumTitle}>{album.title}</Text>
-                  <FontAwesome name="chevron-right" size={14} color="#C7C7CC" />
+                  <Text style={styles.albumTitle} numberOfLines={1}>
+                    {album.title}
+                  </Text>
+                  <FontAwesome name="chevron-right" size={12} color="#C7C7CC" />
                 </View>
                 <Text style={styles.albumTime}>{album.time}</Text>
               </View>
@@ -147,7 +229,7 @@ export default function GalleryScreen() {
           <View style={styles.viewerHeader}>
             <TouchableOpacity
               onPress={() => {
-                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                 isGridVisible ? setIsGridVisible(false) : closeViewer();
               }}
               style={styles.closeButton}
@@ -159,7 +241,7 @@ export default function GalleryScreen() {
             </Text>
             <TouchableOpacity
               style={styles.shareButton}
-              onPress={() => Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium)}
+              onPress={() => void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium)}
             >
               <FontAwesome name="share-square-o" size={20} color="white" />
             </TouchableOpacity>
@@ -188,7 +270,7 @@ export default function GalleryScreen() {
                 <TouchableOpacity
                   style={styles.viewAllBtn}
                   onPress={() => {
-                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                     openGrid();
                   }}
                 >
@@ -206,7 +288,7 @@ export default function GalleryScreen() {
                   <TouchableOpacity
                     style={styles.gridItem}
                     onPress={() => {
-                      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                      void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                       setPreviewImage(item);
                       setIsGridVisible(false);
                     }}
@@ -216,7 +298,7 @@ export default function GalleryScreen() {
                 )}
                 contentContainerStyle={styles.gridList}
                 ListEmptyComponent={
-                  <View style={styles.centerContainer}>
+                  <View style={premiumStyles.centerState}>
                     <Text style={styles.emptyGridText}>No photos in this album.</Text>
                   </View>
                 }
@@ -230,61 +312,22 @@ export default function GalleryScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#F8F9FB',
-  },
-  scrollContent: {
-    padding: 24,
-    paddingBottom: 100,
-  },
-  centerContainer: {
-    padding: 40,
-    alignItems: 'center',
-  },
-  emptyText: {
-    color: '#8E8E93',
-    fontSize: 14,
-    textAlign: 'center',
-  },
-  emptyGridText: {
-    color: 'rgba(255,255,255,0.6)',
-    fontSize: 14,
-    textAlign: 'center',
-  },
-  errorText: {
-    color: '#FF3B30',
-    fontSize: 14,
-    textAlign: 'center',
-    marginBottom: 16,
-  },
-  retryButton: {
-    backgroundColor: '#35408E',
-    paddingHorizontal: 24,
-    paddingVertical: 12,
-    borderRadius: 12,
-  },
-  retryButtonText: {
-    color: 'white',
-    fontWeight: 'bold',
-    fontSize: 14,
-  },
   albumCard: {
-    marginBottom: 32,
-    backgroundColor: 'white',
-    borderRadius: 32,
+    marginBottom: 14,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 18,
     overflow: 'hidden',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 0.05,
-    shadowRadius: 20,
-    elevation: 5,
-    borderWidth: 1,
-    borderColor: '#FFFFFF',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(53, 64, 142, 0.08)',
+    shadowColor: '#1C2456',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.07,
+    shadowRadius: 14,
+    elevation: 4,
   },
   imageContainer: {
     position: 'relative',
-    height: 240,
+    height: 180,
     backgroundColor: '#F0F2F8',
   },
   albumImage: {
@@ -298,37 +341,39 @@ const styles = StyleSheet.create({
   },
   photoCountBadge: {
     position: 'absolute',
-    bottom: 16,
-    left: 16,
-    backgroundColor: 'rgba(255, 255, 255, 0.95)',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 12,
+    bottom: 12,
+    left: 12,
+    backgroundColor: 'rgba(28, 36, 86, 0.92)',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 10,
   },
   photoCountText: {
-    fontSize: 12,
-    fontWeight: 'bold',
-    color: '#35408E',
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#FFFFFF',
   },
   info: {
-    padding: 20,
+    padding: 14,
   },
   titleRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: 4,
+    gap: 8,
   },
   albumTitle: {
-    fontSize: 20,
-    fontWeight: 'bold',
+    flex: 1,
+    fontSize: 16,
+    fontWeight: '800',
     color: '#1C1C1E',
   },
   albumTime: {
-    fontSize: 14,
+    fontSize: 12,
     color: '#8E8E93',
+    fontWeight: '500',
   },
-
   viewerOverlay: {
     flex: 1,
     backgroundColor: '#000000',
@@ -404,7 +449,6 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     fontSize: 16,
   },
-
   gridContainer: {
     flex: 1,
   },
@@ -420,5 +464,10 @@ const styles = StyleSheet.create({
     width: '100%',
     height: '100%',
     borderRadius: 4,
+  },
+  emptyGridText: {
+    color: 'rgba(255,255,255,0.6)',
+    fontSize: 14,
+    textAlign: 'center',
   },
 });

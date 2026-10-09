@@ -4,12 +4,15 @@ import { Stack, useRouter, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { getToken } from '@/services/tokenStorage';
 
+/** Public / pre-auth screens (landing lives at `index`). */
 const AUTH_ROUTES = new Set(['index', 'login', 'signup', 'verify-otp', 'two-factor']);
+
 const PROTECTED_ROOTS = new Set([
   '(tabs)',
   'student',
   'generate-yearbook',
   'alumni-tracker',
+  'profile-settings',
 ]);
 
 export default function RootLayout() {
@@ -22,19 +25,25 @@ export default function RootLayout() {
 
     (async () => {
       try {
-        const token = await getToken();
+        const token = (await getToken())?.trim() || null;
         if (cancelled) return;
 
-        const root = segments[0];
-        const inAuthGroup = !root || AUTH_ROUTES.has(String(root));
-        const inProtected = PROTECTED_ROOTS.has(String(root));
+        const root = segments[0] ? String(segments[0]) : 'index';
+        const inAuthGroup = AUTH_ROUTES.has(root);
+        const inProtected = PROTECTED_ROOTS.has(root);
         const inOtpFlow = root === 'verify-otp' || root === 'two-factor';
 
-        if (token && inAuthGroup && !inOtpFlow) {
-          router.replace('/(tabs)/home');
-        } else if (!token && inProtected) {
-          router.replace('/login');
+        if (token) {
+          // Signed in: leave auth/landing screens for the dashboard
+          // (OTP / 2FA flows may still need to finish).
+          if (inAuthGroup && !inOtpFlow) {
+            router.replace('/(tabs)/home');
+          }
+        } else if (inProtected) {
+          // Signed out on a protected route → Welcome / Landing first.
+          router.replace('/');
         }
+        // Signed out on index / login / signup / otp → stay put.
       } catch {
         // Stay on public routes if token read fails.
       } finally {
@@ -59,7 +68,10 @@ export default function RootLayout() {
   }
 
   return (
-    <Stack screenOptions={{ headerShown: false }}>
+    <Stack
+      initialRouteName="index"
+      screenOptions={{ headerShown: false }}
+    >
       <Stack.Screen name="index" />
       <Stack.Screen name="login" />
       <Stack.Screen name="signup" />
@@ -69,6 +81,7 @@ export default function RootLayout() {
       <Stack.Screen name="student/[id]" options={{ headerShown: false, presentation: 'card' }} />
       <Stack.Screen name="generate-yearbook" options={{ headerShown: false, presentation: 'card' }} />
       <Stack.Screen name="alumni-tracker" options={{ headerShown: false, presentation: 'card' }} />
+      <Stack.Screen name="profile-settings" options={{ headerShown: false, presentation: 'card' }} />
     </Stack>
   );
 }

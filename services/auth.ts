@@ -1,11 +1,13 @@
 import api, {
   AUTH_ENDPOINTS,
   ApiClientError,
+  apiPath,
   extractAuthToken,
   getApiErrorMessage,
   isNetworkOrTimeoutError,
 } from '@/services/api';
 import { API_BASE_URL } from '@/constants/config';
+import { biometricService } from '@/services/biometric';
 import {
   clearAuthStorage,
   clearTempSession,
@@ -14,6 +16,7 @@ import {
 import type {
   AuthResponse,
   AuthSuccessResponse,
+  FaceLoginPayload,
   LoginCredentials,
   OtpRequiredResponse,
   RegisterPayload,
@@ -63,10 +66,7 @@ function rethrowAsSafeError(error: unknown, fallback: string): never {
 
 /**
  * Auth endpoints for the Sinag-Bughaw Laravel API (`routes/api.php`).
- *
- * Registration URL:
- *   {API_BASE_URL}/auth/register
- *   e.g. http://192.168.8.42:8000/api/auth/register
+ * Registration posts to `{API_BASE_URL}/auth/register`.
  */
 export const authService = {
   registerUrl: `${API_BASE_URL}${AUTH_ENDPOINTS.register}`,
@@ -94,6 +94,48 @@ export const authService = {
       return data;
     } catch (error) {
       rethrowAsSafeError(error, 'Unable to sign in. Please try again.');
+    }
+  },
+
+  /**
+   * Face recognition sign-in via `{API_BASE_URL}/auth/face-login`.
+   * No trailing slash — a 301 redirect would turn POST into GET and cause 405.
+   */
+  async loginWithFace(payload: FaceLoginPayload): Promise<AuthResponse> {
+    const email = payload.email?.trim().toLowerCase() || undefined;
+    const studentId = payload.student_id?.trim() || undefined;
+
+    const body: Record<string, string> = {
+      image_base64: payload.image_base64,
+    };
+    if (email) body.email = email;
+    if (studentId) body.student_id = studentId;
+
+    try {
+      const response = await api.post<AuthResponse>(apiPath(AUTH_ENDPOINTS.faceLogin), body, {
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+        },
+        maxRedirects: 0,
+      });
+      const { data, headers } = response;
+
+      if (isOtpRequired(data) || isTwoFactorRequired(data)) {
+        return data;
+      }
+
+      const token = await persistTokenFromResponse(data, headers as Record<string, unknown>);
+      if (!token) {
+        throw new ApiClientError({
+          message: 'Face login succeeded but no auth token was returned by the API.',
+          kind: 'unknown',
+        });
+      }
+
+      return data;
+    } catch (error) {
+      rethrowAsSafeError(error, 'Unable to verify face. Please try again.');
     }
   },
 
@@ -219,7 +261,7 @@ export const authService = {
     } catch {
       // Always clear local session even if the network call fails.
     } finally {
-      await clearAuthStorage();
+      await Promise.all([clearAuthStorage(), biometricService.disable()]);
     }
   },
 

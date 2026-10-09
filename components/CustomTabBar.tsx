@@ -15,6 +15,7 @@ import Animated, {
 import { FontAwesome } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
+import { useUnreadMessages } from '@/modules/chat/useUnreadMessages';
 
 // Expo Router / React Navigation tab bar prop types diverge across versions.
 // Accept the runtime shape without fighting the incompatible type packages.
@@ -25,6 +26,7 @@ export function CustomTabBar({ state, descriptors, navigation }: any) {
   const tabWidth = width / Math.max(state.routes.length, 1);
   const translateX = useSharedValue(state.index * tabWidth);
   const bottomPad = Math.max(insets.bottom, 6);
+  const { unreadCount } = useUnreadMessages(true);
 
   useEffect(() => {
     translateX.value = withTiming(state.index * tabWidth, {
@@ -43,6 +45,8 @@ export function CustomTabBar({ state, descriptors, navigation }: any) {
     switch (name.toLowerCase()) {
       case 'home':
         return <FontAwesome name="home" size={size} color={color} />;
+      case 'messages':
+        return <FontAwesome name="comments" size={size} color={color} />;
       case 'directory':
         return <FontAwesome name="users" size={size} color={color} />;
       case 'gallery':
@@ -85,6 +89,7 @@ export function CustomTabBar({ state, descriptors, navigation }: any) {
               : route.name;
 
         const isFocused = state.index === index;
+        const showBadge = route.name === 'messages' && unreadCount > 0;
 
         const onPress = () => {
           const event = navigation.emit({
@@ -107,9 +112,20 @@ export function CustomTabBar({ state, descriptors, navigation }: any) {
             activeOpacity={1}
             accessibilityRole="button"
             accessibilityState={isFocused ? { selected: true } : {}}
-            accessibilityLabel={label}
+            accessibilityLabel={
+              showBadge ? `${label}, ${unreadCount} unread` : label
+            }
           >
-            <View style={styles.iconContainer}>{getIcon(route.name, isFocused)}</View>
+            <View style={styles.iconContainer}>
+              {getIcon(route.name, isFocused)}
+              {showBadge ? (
+                <View style={styles.badge}>
+                  <Text style={styles.badgeText}>
+                    {unreadCount > 99 ? '99+' : String(unreadCount)}
+                  </Text>
+                </View>
+              ) : null}
+            </View>
             <Text
               style={[
                 styles.label,
@@ -120,7 +136,7 @@ export function CustomTabBar({ state, descriptors, navigation }: any) {
               ]}
               numberOfLines={1}
               adjustsFontSizeToFit
-              minimumFontScale={0.75}
+              minimumFontScale={0.7}
             >
               {label}
             </Text>
@@ -129,7 +145,7 @@ export function CustomTabBar({ state, descriptors, navigation }: any) {
       })}
     </View>
   );
-};
+}
 
 const styles = StyleSheet.create({
   tabBarContainer: {
@@ -151,6 +167,25 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     zIndex: 1,
+  },
+  badge: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    minWidth: 16,
+    height: 16,
+    borderRadius: 8,
+    backgroundColor: '#D14343',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 3,
+    borderWidth: 1.5,
+    borderColor: '#FFFFFF',
+  },
+  badgeText: {
+    color: '#FFFFFF',
+    fontSize: 9,
+    fontWeight: '800',
   },
   label: {
     fontSize: 9,

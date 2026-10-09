@@ -1,7 +1,10 @@
-export { default as api, getApiErrorMessage, extractAuthToken, AUTH_ENDPOINTS, ApiClientError, isNetworkOrTimeoutError, unwrap, asArray, imageUrl } from '@/services/api';
+export { default as api, getApiErrorMessage, extractAuthToken, AUTH_ENDPOINTS, FACE_ENDPOINTS, apiPath, ApiClientError, isNetworkOrTimeoutError, unwrap, asArray, imageUrl } from '@/services/api';
 export { default as authService } from '@/services/auth';
+export { default as faceService } from '@/services/face';
 export { default as yearbookService } from '@/services/yearbook';
 export { default as biometricService } from '@/services/biometric';
 export { default as subscriptionService } from '@/services/subscription';
+export { chatService, ChatModal, useLiveChat, useUnreadMessages, CHAT_ENDPOINTS } from '@/modules/chat';
+export type { ChatPeer, ChatMessage, ChatThread, ChatConversation } from '@/modules/chat';
 export { openAlumniTracker, getYearbookReturnUrl } from '@/services/alumniLink';
 export * from '@/services/tokenStorage';

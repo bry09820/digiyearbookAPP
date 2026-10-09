@@ -1,5 +1,16 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { View, Text, StyleSheet, ScrollView, SafeAreaView, TouchableOpacity, Dimensions, Modal, Animated, ActivityIndicator, Linking, Alert } from 'react-native';
+import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  ScrollView,
+  SafeAreaView,
+  TouchableOpacity,
+  Dimensions,
+  Modal,
+  Animated,
+  ActivityIndicator,
+} from 'react-native';
 import { Image } from 'expo-image';
 import { StatusBar } from 'expo-status-bar';
 import { FontAwesome } from '@expo/vector-icons';
@@ -7,10 +18,19 @@ import * as Haptics from 'expo-haptics';
 import { getApiErrorMessage } from '@/services/api';
 import yearbookService, { FacultyMember } from '@/services/yearbook';
 import { ScreenHeader } from '@/components/ScreenHeader';
+import { ChatModal, type ChatPeer } from '@/modules/chat';
+import {
+  SummaryStats,
+  SearchField,
+  FilterPills,
+  InitialsAvatar,
+  premiumStyles,
+  type FilterPill,
+} from '@/components/premium';
 import { asText } from '@/utils/text';
 
 const { width, height } = Dimensions.get('window');
-const CARD_WIDTH = Math.min(width * 0.62, 260);
+const CARD_WIDTH = (width - 16 * 2 - 12) / 2;
 
 type DepartmentGroup = {
   name: string;
@@ -21,8 +41,12 @@ export default function FacultyScreen() {
   const [departments, setDepartments] = useState<DepartmentGroup[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [search, setSearch] = useState('');
+  const [activeDept, setActiveDept] = useState('All');
   const [selectedFaculty, setSelectedFaculty] = useState<FacultyMember | null>(null);
   const [isModalVisible, setIsModalVisible] = useState(false);
+  const [chatVisible, setChatVisible] = useState(false);
+  const [chatPeer, setChatPeer] = useState<ChatPeer | null>(null);
 
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const slideAnim = useRef(new Animated.Value(height)).current;
@@ -42,8 +66,49 @@ export default function FacultyScreen() {
   }, []);
 
   useEffect(() => {
-    loadFaculty();
+    void loadFaculty();
   }, [loadFaculty]);
+
+  const filterPills: FilterPill[] = useMemo(() => {
+    const pills: FilterPill[] = [{ key: 'all', label: 'All', value: 'All' }];
+    departments.forEach((dept, index) => {
+      pills.push({
+        key: `dept-${dept.name}-${index}`,
+        label: dept.name,
+        value: dept.name,
+      });
+    });
+    return pills;
+  }, [departments]);
+
+  const allFaculty = useMemo(
+    () => departments.flatMap((dept) => dept.faculty.map((member) => ({ ...member, department: dept.name }))),
+    [departments],
+  );
+
+  const filteredFaculty = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return allFaculty.filter((member) => {
+      const deptOk = activeDept === 'All' || member.department === activeDept;
+      if (!deptOk) return false;
+      if (!q) return true;
+      return (
+        member.name.toLowerCase().includes(q) ||
+        member.role.toLowerCase().includes(q) ||
+        (member.department || '').toLowerCase().includes(q) ||
+        (member.email || '').toLowerCase().includes(q)
+      );
+    });
+  }, [allFaculty, activeDept, search]);
+
+  const stats = useMemo(() => {
+    const roles = new Set(allFaculty.map((m) => m.role).filter(Boolean));
+    return [
+      { key: 'total', label: 'Faculty', value: allFaculty.length },
+      { key: 'depts', label: 'Departments', value: departments.length },
+      { key: 'roles', label: 'Roles', value: roles.size },
+    ];
+  }, [allFaculty, departments.length]);
 
   const toggleModal = (visible: boolean, member: FacultyMember | null = null) => {
     if (visible && member) {
@@ -65,84 +130,93 @@ export default function FacultyScreen() {
   };
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={premiumStyles.screen}>
       <StatusBar style="light" />
+      <ScreenHeader
+        title="Faculty"
+        subtitle="Educators & staff directory"
+        icon="graduation-cap"
+      />
 
-      <ScreenHeader title="Faculty" />
+      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={premiumStyles.scrollContent}>
+        <SummaryStats items={stats} />
 
-      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
-        <View style={styles.pageHeader}>
-          <Text style={styles.pageTitle}>Our Educators</Text>
-          <Text style={styles.pageSubtitle}>Swipe to see the brilliance behind NU Lipa</Text>
-        </View>
+        <SearchField
+          value={search}
+          onChangeText={setSearch}
+          placeholder="Search faculty by name, role…"
+        />
+
+        <FilterPills
+          items={filterPills}
+          activeValue={activeDept}
+          onChange={setActiveDept}
+        />
 
         {loading ? (
-          <View style={styles.centerContainer}>
+          <View style={premiumStyles.centerState}>
             <ActivityIndicator size="large" color="#35408E" />
+            <Text style={premiumStyles.mutedText}>Loading faculty…</Text>
           </View>
         ) : error ? (
-          <View style={styles.centerContainer}>
-            <Text style={styles.errorText}>{error}</Text>
-            <TouchableOpacity style={styles.retryButton} onPress={loadFaculty}>
-              <Text style={styles.retryButtonText}>Retry</Text>
+          <View style={premiumStyles.centerState}>
+            <Text style={premiumStyles.errorText}>{error}</Text>
+            <TouchableOpacity style={premiumStyles.primaryButton} onPress={() => void loadFaculty()}>
+              <Text style={premiumStyles.primaryButtonText}>Retry</Text>
             </TouchableOpacity>
           </View>
-        ) : departments.length === 0 ? (
-          <View style={styles.centerContainer}>
-            <Text style={styles.emptyText}>No faculty members found.</Text>
+        ) : filteredFaculty.length === 0 ? (
+          <View style={premiumStyles.centerState}>
+            <Text style={premiumStyles.mutedText}>No faculty members found.</Text>
           </View>
         ) : (
-          departments.map((dept, dIndex) => (
-            <View key={`${dept.name}-${dIndex}`} style={styles.section}>
-              <View style={styles.deptHeader}>
-                <Text style={styles.deptName}>{dept.name}</Text>
-                <View style={styles.deptLine} />
-              </View>
-
-              <ScrollView
-                horizontal
-                showsHorizontalScrollIndicator={false}
-                contentContainerStyle={styles.horizontalScroll}
-                decelerationRate="fast"
-                snapToInterval={CARD_WIDTH + 16}
+          <View style={styles.grid}>
+            {filteredFaculty.map((member) => (
+              <TouchableOpacity
+                key={String(member.id)}
+                style={styles.facultyCard}
+                onPress={() => {
+                  void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                  toggleModal(true, member);
+                }}
+                activeOpacity={0.88}
               >
-                {dept.faculty.map((member) => (
-                  <TouchableOpacity
-                    key={String(member.id)}
-                    style={styles.facultyCard}
-                    onPress={() => {
-                      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                      toggleModal(true, member);
-                    }}
-                  >
-                    <View style={styles.imageWrapper}>
-                      {member.image ? (
-                        <Image
-                          source={member.image}
-                          style={styles.facultyImage}
-                          contentFit="cover"
-                          transition={500}
-                        />
-                      ) : (
-                        <View style={[styles.facultyImage, styles.facultyImagePlaceholder]}>
-                          <FontAwesome name="user" size={36} color="#8E8E93" />
-                        </View>
-                      )}
-                      <View style={styles.roleBadge}>
-                        <Text style={styles.roleText} numberOfLines={1}>
-                          {member.role}
-                        </Text>
-                      </View>
+                <View style={styles.imageWrapper}>
+                  {member.image ? (
+                    <Image
+                      source={member.image}
+                      style={styles.facultyImage}
+                      contentFit="cover"
+                      transition={400}
+                    />
+                  ) : (
+                    <View style={[styles.facultyImage, styles.facultyImagePlaceholder]}>
+                      <Text style={styles.initialsLarge}>
+                        {asText(member.name)
+                          .split(/\s+/)
+                          .filter(Boolean)
+                          .slice(0, 2)
+                          .map((p) => p[0])
+                          .join('')
+                          .toUpperCase() || '?'}
+                      </Text>
                     </View>
-                    <Text style={styles.memberName} numberOfLines={2}>
-                      {member.name}
+                  )}
+                  <View style={styles.roleBadge}>
+                    <Text style={styles.roleText} numberOfLines={1}>
+                      {member.role}
                     </Text>
-                  </TouchableOpacity>
-                ))}
-                <View style={{ width: 16 }} />
-              </ScrollView>
-            </View>
-          ))
+                  </View>
+                </View>
+                <Text style={styles.memberName} numberOfLines={2}>
+                  {member.name}
+                </Text>
+                <Text style={styles.memberDept} numberOfLines={1}>
+                  {member.department || 'NU Lipa'}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
         )}
       </ScrollView>
 
@@ -153,7 +227,7 @@ export default function FacultyScreen() {
               style={{ flex: 1 }}
               activeOpacity={1}
               onPress={() => {
-                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                 toggleModal(false);
               }}
             />
@@ -165,12 +239,12 @@ export default function FacultyScreen() {
                 <View style={styles.blueHeader} />
                 <View style={styles.profileInfoSection}>
                   <View style={styles.avatarWrapper}>
-                    <Image
-                      source={selectedFaculty?.image ? selectedFaculty.image : undefined}
-                      style={[styles.largeAvatar, !selectedFaculty?.image && styles.avatarPlaceholder]}
-                      contentFit="cover"
+                    <InitialsAvatar
+                      name={selectedFaculty?.name}
+                      image={selectedFaculty?.image}
+                      size={140}
                     />
-                    <View style={[styles.medalBadge, { backgroundColor: '#4CD964' }]} />
+                    <View style={styles.onlineDot} />
                   </View>
 
                   <Text style={styles.userName}>{selectedFaculty?.name}</Text>
@@ -184,25 +258,24 @@ export default function FacultyScreen() {
                     <TouchableOpacity
                       style={styles.primaryActionButton}
                       onPress={() => {
-                        const email = asText(selectedFaculty?.email);
-                        if (!email) {
-                          Alert.alert(
-                            'Messaging unavailable',
-                            'This faculty member has not shared a public email yet.',
-                          );
-                          return;
-                        }
-                        void Linking.openURL(
-                          `mailto:${email}?subject=${encodeURIComponent('Hello from NU Lipa Yearbook')}`,
-                        );
-                        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                        if (!selectedFaculty) return;
+                        const peerId = asText(selectedFaculty.id);
+                        if (!peerId) return;
+                        void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                        setChatPeer({
+                          id: peerId,
+                          name: asText(selectedFaculty.name, 'Faculty'),
+                          image: selectedFaculty.image,
+                          kind: 'faculty',
+                        });
+                        setChatVisible(true);
                       }}
                     >
                       <Text style={styles.primaryActionButtonText}>Message Professor</Text>
                     </TouchableOpacity>
                     <TouchableOpacity
                       style={styles.yearbookButton}
-                      onPress={() => Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium)}
+                      onPress={() => void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium)}
                     >
                       <Text style={styles.yearbookButtonText}>View Publications</Text>
                     </TouchableOpacity>
@@ -221,106 +294,44 @@ export default function FacultyScreen() {
           </Animated.View>
         </View>
       </Modal>
+
+      <ChatModal
+        visible={chatVisible}
+        peer={chatPeer}
+        onClose={() => {
+          setChatVisible(false);
+          setChatPeer(null);
+        }}
+      />
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#F8F9FB',
-  },
-  scrollContent: {
-    paddingVertical: 24,
-    paddingBottom: 100,
-  },
-  pageHeader: {
-    paddingHorizontal: 24,
-    marginBottom: 32,
-  },
-  pageTitle: {
-    fontSize: 32,
-    fontWeight: 'bold',
-    color: '#1C1C1E',
-  },
-  pageSubtitle: {
-    fontSize: 14,
-    color: '#8E8E93',
-    marginTop: 4,
-  },
-  centerContainer: {
-    padding: 40,
-    alignItems: 'center',
-  },
-  emptyText: {
-    color: '#8E8E93',
-    fontSize: 14,
-    textAlign: 'center',
-  },
-  errorText: {
-    color: '#FF3B30',
-    fontSize: 14,
-    textAlign: 'center',
-    marginBottom: 16,
-  },
-  retryButton: {
-    backgroundColor: '#35408E',
-    paddingHorizontal: 24,
-    paddingVertical: 12,
-    borderRadius: 12,
-  },
-  retryButtonText: {
-    color: 'white',
-    fontWeight: 'bold',
-    fontSize: 14,
-  },
-  section: {
-    marginBottom: 40,
-  },
-  deptHeader: {
+  grid: {
     flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 20,
-    paddingHorizontal: 24,
-  },
-  deptName: {
-    fontSize: 14,
-    fontWeight: 'bold',
-    color: '#35408E',
-    marginRight: 12,
-    textTransform: 'uppercase',
-    letterSpacing: 1.5,
-  },
-  deptLine: {
-    flex: 1,
-    height: 1,
-    backgroundColor: '#E5E7EB',
-  },
-  horizontalScroll: {
-    paddingHorizontal: 24,
+    flexWrap: 'wrap',
+    gap: 12,
   },
   facultyCard: {
     width: CARD_WIDTH,
-    backgroundColor: 'white',
-    borderRadius: 32,
-    padding: 16,
-    marginRight: 16,
-    alignItems: 'center',
-    shadowColor: '#000',
+    backgroundColor: '#FFFFFF',
+    borderRadius: 18,
+    padding: 12,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(53, 64, 142, 0.08)',
+    shadowColor: '#1C2456',
     shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.05,
-    shadowRadius: 15,
-    elevation: 4,
-    borderWidth: 1,
-    borderColor: '#FFFFFF',
+    shadowOpacity: 0.07,
+    shadowRadius: 14,
+    elevation: 3,
   },
   imageWrapper: {
     width: '100%',
     aspectRatio: 1,
-    borderRadius: 24,
+    borderRadius: 14,
     overflow: 'hidden',
-    marginBottom: 16,
-    position: 'relative',
+    marginBottom: 10,
     backgroundColor: '#F0F2F8',
   },
   facultyImage: {
@@ -328,33 +339,44 @@ const styles = StyleSheet.create({
     height: '100%',
   },
   facultyImagePlaceholder: {
-    backgroundColor: '#E8EAEF',
+    backgroundColor: '#E8EFFF',
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  initialsLarge: {
+    fontSize: 36,
+    fontWeight: '800',
+    color: '#35408E',
+    letterSpacing: 1,
   },
   roleBadge: {
     position: 'absolute',
     bottom: 0,
     left: 0,
     right: 0,
-    backgroundColor: 'rgba(53, 64, 142, 0.9)',
-    paddingVertical: 8,
+    backgroundColor: 'rgba(28, 36, 86, 0.92)',
+    paddingVertical: 7,
+    paddingHorizontal: 8,
     alignItems: 'center',
   },
   roleText: {
-    color: 'white',
-    fontSize: 11,
-    fontWeight: 'bold',
+    color: '#FFFFFF',
+    fontSize: 10,
+    fontWeight: '700',
     textTransform: 'uppercase',
-    letterSpacing: 0.5,
+    letterSpacing: 0.4,
   },
   memberName: {
-    fontSize: 18,
-    fontWeight: 'bold',
+    fontSize: 14,
+    fontWeight: '800',
     color: '#1C1C1E',
-    textAlign: 'center',
+    marginBottom: 2,
   },
-
+  memberDept: {
+    fontSize: 11,
+    color: '#8E8E93',
+    fontWeight: '600',
+  },
   modalOverlay: {
     flex: 1,
     justifyContent: 'flex-end',
@@ -363,9 +385,9 @@ const styles = StyleSheet.create({
     ...StyleSheet.absoluteFill,
   },
   modalContainer: {
-    backgroundColor: 'white',
-    borderTopLeftRadius: 32,
-    borderTopRightRadius: 32,
+    backgroundColor: '#FFFFFF',
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
     height: height * 0.9,
     overflow: 'hidden',
   },
@@ -373,8 +395,8 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   blueHeader: {
-    height: 150,
-    backgroundColor: '#35408E',
+    height: 140,
+    backgroundColor: '#1C2456',
     width: '100%',
   },
   profileInfoSection: {
@@ -384,80 +406,69 @@ const styles = StyleSheet.create({
   },
   avatarWrapper: {
     position: 'relative',
-    marginBottom: 20,
-  },
-  largeAvatar: {
-    width: 140,
-    height: 140,
+    marginBottom: 16,
     borderRadius: 70,
-    borderWidth: 6,
+    borderWidth: 5,
     borderColor: '#FFFFFF',
-    backgroundColor: '#F0F2F8',
+    overflow: 'visible',
   },
-  avatarPlaceholder: {
-    backgroundColor: '#D1D1D6',
-  },
-  medalBadge: {
+  onlineDot: {
     position: 'absolute',
-    bottom: 10,
-    right: 10,
-    width: 24,
-    height: 24,
-    borderRadius: 12,
-    borderWidth: 2,
-    borderColor: 'white',
+    bottom: 8,
+    right: 8,
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    backgroundColor: '#22C55E',
+    borderWidth: 3,
+    borderColor: '#FFFFFF',
   },
   userName: {
-    fontSize: 26,
-    fontWeight: 'bold',
+    fontSize: 24,
+    fontWeight: '800',
     color: '#1C1C1E',
-    marginBottom: 6,
+    marginBottom: 4,
     textAlign: 'center',
   },
   userDegree: {
-    fontSize: 16,
+    fontSize: 15,
     color: '#35408E',
-    fontWeight: '500',
-    marginBottom: 4,
+    fontWeight: '600',
+    marginBottom: 2,
   },
   userYear: {
-    fontSize: 14,
+    fontSize: 13,
     color: '#8E8E93',
-    marginBottom: 4,
+    marginBottom: 2,
   },
   userEmail: {
-    fontSize: 14,
+    fontSize: 13,
     color: '#35408E',
-    marginBottom: 20,
+    marginBottom: 18,
   },
   actionButtons: {
     flexDirection: 'row',
-    gap: 12,
+    gap: 10,
     width: '100%',
-    marginBottom: 30,
+    marginBottom: 24,
   },
   primaryActionButton: {
     flex: 1,
-    height: 50,
+    height: 48,
     backgroundColor: '#35408E',
     borderRadius: 12,
     justifyContent: 'center',
     alignItems: 'center',
-    elevation: 2,
-    shadowColor: '#35408E',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.2,
-    shadowRadius: 8,
   },
   primaryActionButtonText: {
-    color: 'white',
-    fontWeight: 'bold',
-    fontSize: 14,
+    color: '#FFFFFF',
+    fontWeight: '700',
+    fontSize: 13,
   },
   yearbookButton: {
     flex: 1,
-    height: 50,
-    backgroundColor: 'white',
+    height: 48,
+    backgroundColor: '#FFFFFF',
     borderRadius: 12,
     justifyContent: 'center',
     alignItems: 'center',
@@ -466,8 +477,8 @@ const styles = StyleSheet.create({
   },
   yearbookButtonText: {
     color: '#35408E',
-    fontWeight: 'bold',
-    fontSize: 14,
+    fontWeight: '700',
+    fontSize: 13,
   },
   contentSection: {
     paddingHorizontal: 24,
@@ -476,11 +487,11 @@ const styles = StyleSheet.create({
   sectionHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 16,
+    marginBottom: 12,
   },
   sectionTitle: {
-    fontSize: 14,
-    fontWeight: 'bold',
+    fontSize: 13,
+    fontWeight: '800',
     color: '#1C1C1E',
     letterSpacing: 0.5,
   },

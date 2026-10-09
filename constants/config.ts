@@ -3,9 +3,13 @@ import Constants from 'expo-constants';
 
 /**
  * Infer the machine running Metro / Expo from the runtime host URI.
- * Useful on physical devices when EXPO_PUBLIC_API_URL is missing or stale.
+ * Dev-only fallback when EXPO_PUBLIC_API_URL is missing.
  */
 function inferLanApiUrl(): string | null {
+  if (!__DEV__) {
+    return null;
+  }
+
   const expoConfig = Constants.expoConfig as { hostUri?: string } | null;
   const manifest2 = Constants.manifest2 as
     | { extra?: { expoClient?: { hostUri?: string } } }
@@ -33,20 +37,42 @@ function inferLanApiUrl(): string | null {
 const EMULATOR_DEFAULT =
   Platform.OS === 'android' ? 'http://10.0.2.2:8000/api' : 'http://localhost:8000/api';
 
+function isNonProductionFallback(url: string): boolean {
+  return /localhost|127\.0\.0\.1|10\.0\.2\.2|192\.168\.|10\.\d+\.|172\.(1[6-9]|2\d|3[0-1])\./i.test(
+    url,
+  );
+}
+
 /**
  * Laravel API base URL resolution order:
- * 1. EXPO_PUBLIC_API_URL from `.env` (preferred for physical devices)
- * 2. Expo LAN host (same Wi‑Fi as Metro) → http://<host>:8000/api
- * 3. Emulator / simulator defaults
- *
- * Physical device: phone and PC must share Wi‑Fi; Laravel must listen on
- * 0.0.0.0 (e.g. `php artisan serve --host=0.0.0.0 --port=8000`).
+ * 1. EXPO_PUBLIC_API_URL (required for release / EAS builds)
+ * 2. Expo LAN host (dev only)
+ * 3. Emulator / simulator defaults (dev only)
  */
-export const API_BASE_URL = (
-  process.env.EXPO_PUBLIC_API_URL ||
-  inferLanApiUrl() ||
-  EMULATOR_DEFAULT
-).replace(/\/$/, '');
+function resolveApiBaseUrl(): string {
+  const fromEnv = (process.env.EXPO_PUBLIC_API_URL || '').trim().replace(/\/$/, '');
+
+  if (fromEnv) {
+    if (!__DEV__ && isNonProductionFallback(fromEnv)) {
+      console.warn(
+        '[config] EXPO_PUBLIC_API_URL looks like a local/dev host. ' +
+          'Set a public HTTPS API URL for production EAS builds.',
+      );
+    }
+    return fromEnv;
+  }
+
+  if (__DEV__) {
+    return (inferLanApiUrl() || EMULATOR_DEFAULT).replace(/\/$/, '');
+  }
+
+  throw new Error(
+    'EXPO_PUBLIC_API_URL is required for production builds. ' +
+      'Set it in EAS secrets or your .env before running eas build.',
+  );
+}
+
+export const API_BASE_URL = resolveApiBaseUrl();
 
 export const AUTH_BASE_URL = (
   process.env.EXPO_PUBLIC_AUTH_BASE_URL ||
@@ -91,4 +117,3 @@ export const BILLING_URL = (
 export const SUBSCRIPTION_RETURN_URL = (
   process.env.EXPO_PUBLIC_SUBSCRIPTION_RETURN_URL || 'capstoneapp://subscription/callback'
 ).trim();
-

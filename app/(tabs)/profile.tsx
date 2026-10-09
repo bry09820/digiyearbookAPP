@@ -1,60 +1,119 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
   StyleSheet,
   ScrollView,
   TouchableOpacity,
-  Dimensions,
-  Modal,
-  TextInput,
-  KeyboardAvoidingView,
   Platform,
-  Animated,
   ActivityIndicator,
   Alert,
   ActionSheetIOS,
+  Dimensions,
 } from 'react-native';
 import { Image } from 'expo-image';
 import { FontAwesome } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import * as ImagePicker from 'expo-image-picker';
 import { StatusBar } from 'expo-status-bar';
-import { useRouter } from 'expo-router';
+import { useFocusEffect, useRouter, type Href } from 'expo-router';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { FaceLoginCameraModal } from '@/components/FaceLoginCameraModal';
+import { UpgradePrompt } from '@/components/UpgradePrompt';
+import { ScreenHeader } from '@/components/ScreenHeader';
+import {
+  SummaryStats,
+  FilterPills,
+  premiumStyles,
+  premium,
+  type FilterPill,
+} from '@/components/premium';
 import { imageUrl, getApiErrorMessage } from '@/services/api';
-import { yearbookService, type AchievementItem } from '@/services/yearbook';
 import { authService } from '@/services/auth';
+import { faceService } from '@/services/face';
+import { yearbookService, type AchievementItem } from '@/services/yearbook';
 import { asText, firstText } from '@/utils/text';
 import { resolveSubscription } from '@/utils/subscription';
-import { UpgradePrompt } from '@/components/UpgradePrompt';
 
-const { height } = Dimensions.get('window');
+const { width: SCREEN_WIDTH } = Dimensions.get('window');
+const COVER_HEIGHT = 120;
+const AVATAR_SIZE = 112;
+const AVATAR_OVERLAP = 56;
+
+type ProfileTab = 'posts' | 'tagged' | 'yearbook' | 'academic' | 'achievements';
 
 type ProfileFields = {
   name: string;
   firstName: string;
   lastName: string;
   degree: string;
+  program: string;
   year: string;
+  batch: string;
   about: string;
   avatar: string | null;
+  cover: string | null;
   email: string;
   studentId: string;
+  userId: number | null;
   subscriptionLabel: string;
   subscriptionTier: string;
   isSubscribed: boolean;
+  isGraduate: boolean;
+  school: string;
 };
+
+type ProfileStats = {
+  posts: string;
+  views: string;
+  program: string;
+  id: string;
+  batch: string;
+};
+
+const PROFILE_TABS: { id: ProfileTab; label: string; icon: React.ComponentProps<typeof FontAwesome>['name'] }[] = [
+  { id: 'posts', label: 'Posts', icon: 'th-large' },
+  { id: 'tagged', label: 'Tagged', icon: 'tags' },
+  { id: 'yearbook', label: 'Yearbook', icon: 'book' },
+  { id: 'academic', label: 'Academic', icon: 'graduation-cap' },
+  { id: 'achievements', label: 'Achievements', icon: 'trophy' },
+];
+
+function isGraduateUser(user: Record<string, unknown>): boolean {
+  const role = String(user.role || '').toLowerCase();
+  if (['alumni', 'graduate', 'graduated'].includes(role)) return true;
+  const year = Number(
+    user.graduation_year ?? (user.student as { graduation_year?: number } | undefined)?.graduation_year,
+  );
+  return Number.isFinite(year) && year <= new Date().getFullYear();
+}
+
+function formatStatCount(value: unknown, fallback = '0'): string {
+  if (value == null || value === '') return fallback;
+  const num = typeof value === 'number' ? value : Number(String(value).replace(/,/g, ''));
+  if (!Number.isFinite(num)) return asText(value, fallback) || fallback;
+  if (num >= 1_000_000) return `${(num / 1_000_000).toFixed(1).replace(/\.0$/, '')}M`;
+  if (num >= 1_000) return `${(num / 1_000).toFixed(1).replace(/\.0$/, '')}K`;
+  return String(Math.round(num));
+}
 
 function mapUserFields(user: Record<string, unknown>): ProfileFields {
   const firstName = asText(user.first_name);
   const lastName = asText(user.last_name);
   const name =
     firstText(user.name, [firstName, lastName].filter(Boolean).join(' ')) || 'Student';
-  const degree = firstText(user.course, 'NU Lipa') || 'NU Lipa';
+  const program = firstText(user.course, user.course_short, user.program) || 'NU Lipa';
+  const batchRaw = firstText(
+    user.batch,
+    asText(user.batch_year),
+    asText(user.graduation_year),
+  );
   const year =
     user.graduation_year != null
       ? `Class of ${asText(user.graduation_year)}`
-      : firstText(user.batch, 'Student') || 'Student';
+      : batchRaw
+        ? `Batch ${batchRaw}`
+        : 'Student';
 
   const subscription = resolveSubscription(user);
 
@@ -62,83 +121,122 @@ function mapUserFields(user: Record<string, unknown>): ProfileFields {
     name,
     firstName: firstName || name.split(/\s+/)[0] || '',
     lastName: lastName || name.split(/\s+/).slice(1).join(' ') || '',
-    degree,
+    degree: program,
+    program,
     year,
+    batch: batchRaw || '—',
     about: firstText(user.bio, user.motto, user.about),
     avatar: imageUrl(user.profile_picture ?? user.avatar ?? user.photo),
+    cover: imageUrl(
+      user.cover_photo ?? user.cover_image ?? user.banner ?? user.cover,
+    ),
     email: asText(user.email),
     studentId: asText(user.student_id),
+    userId: typeof user.id === 'number' ? user.id : Number(user.id) || null,
     subscriptionLabel: subscription.label,
     subscriptionTier: String(subscription.tier),
     isSubscribed: subscription.isSubscribed,
+    isGraduate: isGraduateUser(user),
+    school: firstText(user.school, user.campus, 'National University — Lipa') || 'National University — Lipa',
+  };
+}
+
+function mapStats(raw: unknown, fields: ProfileFields): ProfileStats {
+  const payload =
+    raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
+  const nested =
+    payload.stats && typeof payload.stats === 'object'
+      ? (payload.stats as Record<string, unknown>)
+      : payload;
+
+  return {
+    posts: formatStatCount(
+      nested.posts ?? nested.post_count ?? nested.total_posts ?? nested.posts_count,
+      '0',
+    ),
+    views: formatStatCount(
+      nested.views ??
+        nested.profile_views ??
+        nested.total_views ??
+        nested.views_count ??
+        nested.views_this_week,
+      '0',
+    ),
+    program: asText(fields.program, '—') || '—',
+    id: asText(fields.studentId, '—') || '—',
+    batch: asText(fields.batch, '—') || '—',
   };
 }
 
 export default function ProfileScreen() {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
 
   const [fields, setFields] = useState<ProfileFields>({
     name: '',
     firstName: '',
     lastName: '',
     degree: '',
+    program: '',
     year: '',
+    batch: '',
     about: '',
     avatar: null,
+    cover: null,
     email: '',
     studentId: '',
+    userId: null,
     subscriptionLabel: 'Free',
     subscriptionTier: 'free',
     isSubscribed: false,
+    isGraduate: false,
+    school: 'National University — Lipa',
+  });
+  const [stats, setStats] = useState<ProfileStats>({
+    posts: '0',
+    views: '0',
+    program: '—',
+    id: '—',
+    batch: '—',
   });
   const [achievements, setAchievements] = useState<AchievementItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [saveError, setSaveError] = useState<string | null>(null);
-  const [passwordError, setPasswordError] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
-  const [updatingPassword, setUpdatingPassword] = useState(false);
   const [uploadingAvatar, setUploadingAvatar] = useState(false);
-
-  const [isEditModalVisible, setIsEditModalVisible] = useState(false);
-  const [isPasswordModalVisible, setIsPasswordModalVisible] = useState(false);
   const [upgradeVisible, setUpgradeVisible] = useState(false);
+  const [faceCameraVisible, setFaceCameraVisible] = useState(false);
+  const [faceRegistering, setFaceRegistering] = useState(false);
+  const [activeTab, setActiveTab] = useState<ProfileTab>('posts');
 
-  const fadeAnim = useRef(new Animated.Value(0)).current;
-  const slideAnim = useRef(new Animated.Value(height)).current;
-
-  const [editName, setEditName] = useState('');
-  const [editAbout, setEditAbout] = useState('');
-  const [currentPassword, setCurrentPassword] = useState('');
-  const [newPassword, setNewPassword] = useState('');
-  const [confirmPassword, setConfirmPassword] = useState('');
-
-  const applyMapped = useCallback((mapped: ProfileFields, achievementList: AchievementItem[]) => {
-    setFields(mapped);
-    setAchievements(
-      (Array.isArray(achievementList) ? achievementList : []).map((item, index) => ({
-        ...item,
-        id: `${asText(item.id, 'ach')}-${index}`,
-        title: asText(item.title, 'Achievement'),
-        name: asText(item.name),
-        desc: asText(item.desc),
-        date: asText(item.date),
-      })),
-    );
-    setEditName(mapped.name);
-    setEditAbout(mapped.about);
-  }, []);
+  const applyMapped = useCallback(
+    (mapped: ProfileFields, achievementList: AchievementItem[], statsRaw: unknown) => {
+      setFields(mapped);
+      setStats(mapStats(statsRaw, mapped));
+      setAchievements(
+        (Array.isArray(achievementList) ? achievementList : []).map((item, index) => ({
+          ...item,
+          id: `${asText(item.id, 'ach')}-${index}`,
+          title: asText(item.title, 'Achievement'),
+          name: asText(item.name),
+          desc: asText(item.desc),
+          date: asText(item.date),
+        })),
+      );
+    },
+    [],
+  );
 
   const loadProfile = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const [userRaw, achievementList] = await Promise.all([
+      const [userRaw, achievementList, statsRaw] = await Promise.all([
         yearbookService.getCurrentUser(),
         yearbookService.getProfileAchievements().catch(() => []),
+        yearbookService.getMyStats().catch(() => null),
       ]);
       const user = (userRaw && typeof userRaw === 'object' ? userRaw : {}) as Record<string, unknown>;
-      applyMapped(mapUserFields(user), achievementList as AchievementItem[]);
+      applyMapped(mapUserFields(user), achievementList as AchievementItem[], statsRaw);
     } catch (err) {
       setError(getApiErrorMessage(err, 'Unable to load profile.'));
     } finally {
@@ -146,39 +244,11 @@ export default function ProfileScreen() {
     }
   }, [applyMapped]);
 
-  useEffect(() => {
-    void loadProfile();
-  }, [loadProfile]);
-
-  const toggleModal = (modalType: 'edit' | 'password', visible: boolean) => {
-    if (visible) {
-      if (modalType === 'edit') {
-        setEditName(fields.name);
-        setEditAbout(fields.about);
-        setSaveError(null);
-        setIsEditModalVisible(true);
-      } else {
-        setCurrentPassword('');
-        setNewPassword('');
-        setConfirmPassword('');
-        setPasswordError(null);
-        setIsPasswordModalVisible(true);
-      }
-
-      Animated.parallel([
-        Animated.timing(fadeAnim, { toValue: 1, duration: 300, useNativeDriver: true }),
-        Animated.spring(slideAnim, { toValue: 0, useNativeDriver: true, tension: 50, friction: 8 }),
-      ]).start();
-    } else {
-      Animated.parallel([
-        Animated.timing(fadeAnim, { toValue: 0, duration: 250, useNativeDriver: true }),
-        Animated.timing(slideAnim, { toValue: height, duration: 250, useNativeDriver: true }),
-      ]).start(() => {
-        setIsEditModalVisible(false);
-        setIsPasswordModalVisible(false);
-      });
-    }
-  };
+  useFocusEffect(
+    useCallback(() => {
+      void loadProfile();
+    }, [loadProfile]),
+  );
 
   const pickAndUploadAvatar = async (fromCamera: boolean) => {
     try {
@@ -214,14 +284,12 @@ export default function ProfileScreen() {
 
       const uri = result.assets[0].uri;
       setUploadingAvatar(true);
-      // Optimistic local preview
       setFields((prev) => ({ ...prev, avatar: uri }));
 
       const { url } = await yearbookService.uploadProfilePicture(uri);
       if (url) {
         setFields((prev) => ({ ...prev, avatar: url }));
       } else {
-        // Refresh from /auth/me so storage URL resolves like the web app
         await loadProfile();
       }
 
@@ -258,89 +326,111 @@ export default function ProfileScreen() {
     ]);
   };
 
-  const handleSaveProfile = async () => {
-    setSaving(true);
-    setSaveError(null);
-    try {
-      const nextBio = editAbout.trim();
-      const nextName = editName.trim();
-
-      await yearbookService.updateProfileBio(nextBio);
-
-      if (nextName && nextName !== fields.name) {
-        const parts = nextName.split(/\s+/);
-        const first_name = parts[0];
-        const last_name = parts.slice(1).join(' ') || parts[0];
-        await yearbookService.updateAcademic({
-          first_name,
-          last_name,
-          name: nextName,
-        });
-      }
-
-      await loadProfile();
-      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      toggleModal('edit', false);
-    } catch (err) {
-      setSaveError(getApiErrorMessage(err, 'Unable to save profile.'));
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const handleUpdatePassword = async () => {
-    if (!currentPassword || !newPassword || !confirmPassword) {
-      setPasswordError('Please fill in all password fields.');
-      return;
-    }
-    if (newPassword.length < 8) {
-      setPasswordError('New password must be at least 8 characters.');
-      return;
-    }
-    if (newPassword !== confirmPassword) {
-      setPasswordError('New passwords do not match.');
-      return;
-    }
-
-    setUpdatingPassword(true);
-    setPasswordError(null);
-    try {
-      await yearbookService.updatePassword({
-        current_password: currentPassword,
-        password: newPassword,
-        password_confirmation: confirmPassword,
-      });
-      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      toggleModal('password', false);
-      Alert.alert('Password updated', 'Your password was changed successfully.');
-    } catch (err) {
-      setPasswordError(getApiErrorMessage(err, 'Unable to update password.'));
-    } finally {
-      setUpdatingPassword(false);
-    }
-  };
-
   const handleSignOut = async () => {
     await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
     try {
       await authService.logout();
     } finally {
-      router.replace('/login');
+      router.replace('/');
     }
   };
 
+  const openFaceRegistration = () => {
+    if (Platform.OS === 'web') {
+      Alert.alert(
+        'Unavailable on web',
+        'Face registration requires the iOS or Android app with camera access.',
+      );
+      return;
+    }
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setFaceCameraVisible(true);
+  };
+
+  const closeFaceRegistration = () => {
+    if (faceRegistering) return;
+    setFaceCameraVisible(false);
+  };
+
+  const handleFaceRegisterCapture = async (imageBase64: string) => {
+    setFaceRegistering(true);
+    try {
+      const result = await faceService.registerFace({
+        image_base64: imageBase64,
+        student_id: fields.studentId || undefined,
+        user_id: fields.userId ?? undefined,
+      });
+
+      setFaceCameraVisible(false);
+      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      Alert.alert(
+        'Face registered',
+        result.message ||
+          'Your face was indexed for recognition login. Your profile picture was not changed.',
+      );
+    } catch (err) {
+      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      Alert.alert(
+        'Face registration failed',
+        getApiErrorMessage(err, 'Unable to register face. Please try again.'),
+        [
+          { text: 'Try again', style: 'cancel' },
+          {
+            text: 'Close',
+            onPress: () => setFaceCameraVisible(false),
+          },
+        ],
+      );
+    } finally {
+      setFaceRegistering(false);
+    }
+  };
+
+  const statsItems = useMemo(
+    () => [
+      { key: 'posts', label: 'Posts', value: stats.posts },
+      { key: 'views', label: 'Views', value: stats.views },
+      { key: 'program', label: 'Program', value: stats.program },
+      { key: 'id', label: 'ID', value: stats.id },
+      { key: 'batch', label: 'Batch', value: stats.batch },
+    ],
+    [stats],
+  );
+
+  const tabPills: FilterPill[] = useMemo(
+    () =>
+      PROFILE_TABS.map((tab) => ({
+        key: tab.id,
+        label: tab.label,
+        value: tab.id,
+      })),
+    [],
+  );
+
+  const headerSubtitle = fields.isGraduate
+    ? 'Graduate · National University — Lipa'
+    : 'Student · National University — Lipa';
+  const headerIcon = fields.isGraduate ? 'graduation-cap' : 'book';
+
   if (loading) {
     return (
-      <View style={[styles.container, styles.centered]}>
+      <View style={premiumStyles.screen}>
         <StatusBar style="light" />
-        <ActivityIndicator size="large" color="#35408E" />
-        <Text style={styles.loadingText}>Loading profile…</Text>
+        <ScreenHeader
+          title="My Profile"
+          subtitle="Loading your profile…"
+          icon="graduation-cap"
+        />
+        <View style={premiumStyles.centerState}>
+          <ActivityIndicator size="large" color={premium.brand} />
+          <Text style={premiumStyles.mutedText}>Loading profile…</Text>
+        </View>
       </View>
     );
   }
 
   return (
-    <View style={styles.container}>
+    <View style={premiumStyles.screen}>
       <StatusBar style="light" />
 
       <UpgradePrompt
@@ -354,6 +444,24 @@ export default function ProfileScreen() {
         }}
       />
 
+      <ScreenHeader
+        title="My Profile"
+        subtitle={headerSubtitle}
+        icon={headerIcon}
+        rightAccessory={
+          <TouchableOpacity
+            style={styles.headerSettingsBtn}
+            onPress={() => {
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              router.push('/profile-settings' as Href);
+            }}
+            accessibilityLabel="Account settings"
+          >
+            <FontAwesome name="cog" size={16} color="#FFC800" />
+          </TouchableOpacity>
+        }
+      />
+
       {error ? (
         <View style={styles.errorBanner}>
           <Text style={styles.errorBannerText}>{error}</Text>
@@ -363,354 +471,298 @@ export default function ProfileScreen() {
         </View>
       ) : null}
 
-      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
-        <View style={styles.blueHeader} />
+      <ScrollView
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={[
+          premiumStyles.scrollContent,
+          { paddingBottom: 48 + insets.bottom },
+        ]}
+      >
+        {/* Cover photo strip — no title bar */}
+        <View style={styles.coverWrap}>
+          {fields.cover ? (
+            <Image source={fields.cover} style={styles.coverImage} contentFit="cover" />
+          ) : (
+            <Image
+              source={require('../../assets/images/nu.jpg')}
+              style={styles.coverImage}
+              contentFit="cover"
+            />
+          )}
+          <View style={styles.coverOverlay} />
+        </View>
 
-        <View style={styles.profileInfoSection}>
+        {/* Avatar overlapping into identity card */}
+        <View style={styles.avatarRow}>
           <TouchableOpacity
             style={styles.avatarWrapper}
             onPress={handleChangeAvatar}
             disabled={uploadingAvatar}
             accessibilityLabel="Change profile picture"
+            activeOpacity={0.9}
           >
             {fields.avatar ? (
               <Image source={fields.avatar} style={styles.avatar} contentFit="cover" />
             ) : (
               <View style={[styles.avatar, styles.avatarPlaceholder]}>
-                <FontAwesome name="user" size={56} color="#8E8E93" />
+                <FontAwesome name="user" size={42} color="#8E8E93" />
               </View>
             )}
+            <View style={styles.onlineDot} accessibilityLabel="Online" />
             <View style={styles.cameraBadge}>
               {uploadingAvatar ? (
                 <ActivityIndicator size="small" color="#35408E" />
               ) : (
-                <FontAwesome name="camera" size={12} color="#35408E" />
+                <FontAwesome name="camera" size={11} color="#35408E" />
               )}
             </View>
           </TouchableOpacity>
+        </View>
 
+        {/* Identity card */}
+        <View style={[premiumStyles.contentCard, styles.identityCard]}>
           <Text style={styles.userName}>{asText(fields.name, 'Student')}</Text>
-          <Text style={styles.userDegree}>{asText(fields.degree, 'NU Lipa')}</Text>
-          <Text style={styles.userYear}>{asText(fields.year)}</Text>
+          <Text style={styles.userSchool}>{asText(fields.school)}</Text>
+          <Text style={styles.userDegree}>
+            {[asText(fields.degree, 'NU Lipa'), asText(fields.year)].filter(Boolean).join(' · ')}
+          </Text>
           {fields.email ? <Text style={styles.userEmail}>{fields.email}</Text> : null}
-          {fields.studentId ? (
-            <Text style={styles.userMeta}>Student ID {fields.studentId}</Text>
-          ) : null}
-          <View
-            style={[
-              styles.subscriptionBadge,
-              fields.isSubscribed ? styles.subscriptionBadgeActive : styles.subscriptionBadgeFree,
-            ]}
-          >
-            <FontAwesome
-              name={fields.isSubscribed ? 'star' : 'user-o'}
-              size={12}
-              color={fields.isSubscribed ? '#874D00' : '#35408E'}
-              style={styles.subscriptionIcon}
-            />
-            <Text
+
+          <View style={styles.badgeRow}>
+            {fields.isGraduate ? (
+              <View style={[styles.statusBadge, styles.graduateBadge]}>
+                <FontAwesome name="graduation-cap" size={11} color="#1D39C4" style={styles.badgeIcon} />
+                <Text style={[styles.statusBadgeText, styles.graduateBadgeText]}>Graduate</Text>
+              </View>
+            ) : (
+              <View style={[styles.statusBadge, styles.studentBadge]}>
+                <FontAwesome name="book" size={11} color="#35408E" style={styles.badgeIcon} />
+                <Text style={[styles.statusBadgeText, styles.studentBadgeText]}>Student</Text>
+              </View>
+            )}
+            <View
               style={[
-                styles.subscriptionText,
-                fields.isSubscribed ? styles.subscriptionTextActive : styles.subscriptionTextFree,
+                styles.statusBadge,
+                fields.isSubscribed ? styles.premiumBadge : styles.freeBadge,
               ]}
             >
-              {asText(fields.subscriptionLabel, 'Free')}
-            </Text>
+              <FontAwesome
+                name={fields.isSubscribed ? 'star' : 'user-o'}
+                size={11}
+                color={fields.isSubscribed ? '#874D00' : '#5C6B8A'}
+                style={styles.badgeIcon}
+              />
+              <Text
+                style={[
+                  styles.statusBadgeText,
+                  fields.isSubscribed ? styles.premiumBadgeText : styles.freeBadgeText,
+                ]}
+              >
+                {fields.isSubscribed ? 'Premium' : asText(fields.subscriptionLabel, 'Free')}
+              </Text>
+            </View>
+          </View>
+
+          <View style={styles.actionRow}>
+            <TouchableOpacity
+              style={styles.primaryAction}
+              onPress={() => {
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                router.push('/profile-settings' as Href);
+              }}
+            >
+              <FontAwesome name="pencil" size={13} color="#FFFFFF" style={styles.actionIcon} />
+              <Text style={styles.primaryActionText}>Edit Profile</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.secondaryAction}
+              onPress={openFaceRegistration}
+              disabled={faceRegistering}
+            >
+              <FontAwesome name="user" size={13} color="#35408E" style={styles.actionIcon} />
+              <Text style={styles.secondaryActionText}>Face ID</Text>
+            </TouchableOpacity>
+            {!fields.isSubscribed ? (
+              <TouchableOpacity
+                style={styles.upgradeAction}
+                onPress={() => {
+                  void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+                  setUpgradeVisible(true);
+                }}
+              >
+                <FontAwesome name="star" size={13} color="#874D00" style={styles.actionIcon} />
+                <Text style={styles.upgradeActionText}>Upgrade</Text>
+              </TouchableOpacity>
+            ) : null}
           </View>
 
           {fields.isSubscribed ? (
             <View style={styles.premiumActiveBanner}>
-              <FontAwesome name="check-circle" size={18} color="#874D00" />
-              <View style={styles.premiumActiveCopy}>
-                <Text style={styles.premiumActiveTitle}>Premium active</Text>
-                <Text style={styles.premiumActiveBody}>
-                  Full profiles, flipbooks, and yearbook tools are unlocked on your account.
-                </Text>
-              </View>
+              <FontAwesome name="check-circle" size={16} color="#874D00" />
+              <Text style={styles.premiumActiveBody}>
+                Premium active — full profiles, flipbooks, and yearbook tools unlocked.
+              </Text>
             </View>
-          ) : (
-            <TouchableOpacity
-              style={styles.upgradeBanner}
-              activeOpacity={0.9}
-              onPress={() => {
-                void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-                setUpgradeVisible(true);
-              }}
-              accessibilityRole="button"
-              accessibilityLabel="Upgrade to Premium"
-            >
-              <View style={styles.upgradeBannerIcon}>
-                <FontAwesome name="star" size={18} color="#FFC800" />
-              </View>
-              <View style={styles.upgradeBannerCopy}>
-                <Text style={styles.upgradeBannerTitle}>Upgrade to Premium</Text>
-                <Text style={styles.upgradeBannerBody}>
-                  Unlock full directory profiles and digital yearbook flipbooks.
-                </Text>
-              </View>
-              <FontAwesome name="chevron-right" size={14} color="#FFC800" />
-            </TouchableOpacity>
-          )}
+          ) : null}
         </View>
 
-        <View style={styles.contentSection}>
-          <View style={styles.sectionHeader}>
-            <FontAwesome name="book" size={16} color="#35408E" style={styles.sectionIcon} />
-            <Text style={styles.sectionTitle}>ABOUT</Text>
-          </View>
-          <Text style={styles.aboutText}>{asText(fields.about, 'No bio yet. Tap Account Settings to add one.')}</Text>
+        <SummaryStats items={statsItems} scrollable style={styles.statsSpacing} />
 
-          <View style={[styles.sectionHeader, styles.achievementsHeader]}>
-            <FontAwesome name="bookmark-o" size={16} color="#35408E" style={styles.sectionIcon} />
-            <Text style={styles.sectionTitle}>ACHIEVEMENTS</Text>
-          </View>
+        <FilterPills
+          items={tabPills}
+          activeValue={activeTab}
+          onChange={(value) => setActiveTab(value as ProfileTab)}
+        />
 
-          {achievements.length === 0 ? (
-            <Text style={styles.emptyAchievements}>No achievements yet.</Text>
-          ) : (
-            achievements.map((item, index) => (
-              <View
-                key={`ach-${asText(item.id)}-${index}`}
-                style={index % 2 === 0 ? styles.achievementCardYellow : styles.achievementCardBlue}
-              >
-                <View style={styles.achievementInfo}>
-                  <Text
-                    style={
-                      index % 2 === 0 ? styles.achievementTitleYellow : styles.achievementTitleBlue
-                    }
-                  >
-                    {asText(item.title)}
-                  </Text>
-                  <Text
-                    style={index % 2 === 0 ? styles.achievementSubYellow : styles.achievementSubBlue}
-                  >
-                    {asText(item.name) || asText(item.date)}
-                  </Text>
-                </View>
-                <FontAwesome
-                  name="bookmark-o"
-                  size={18}
-                  color={index % 2 === 0 ? '#A67C00' : '#35408E'}
-                />
+        {/* Tab panels */}
+        <View style={[premiumStyles.contentCard, styles.panelCard]}>
+          {activeTab === 'posts' ? (
+            <View style={styles.emptyPanel}>
+              <View style={styles.emptyIconWrap}>
+                <FontAwesome name="th-large" size={22} color="#35408E" />
               </View>
-            ))
-          )}
+              <Text style={styles.emptyTitle}>No posts yet</Text>
+              <Text style={styles.emptyBody}>
+                Your yearbook posts and shared memories will appear here.
+              </Text>
+            </View>
+          ) : null}
 
-          <View style={styles.footerMenu}>
-            <TouchableOpacity
-              style={styles.menuButton}
-              onPress={() => {
-                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                toggleModal('edit', true);
-              }}
-            >
-              <FontAwesome name="cog" size={18} color="#35408E" style={styles.menuIcon} />
-              <Text style={styles.menuButtonText}>Account Settings</Text>
-            </TouchableOpacity>
+          {activeTab === 'tagged' ? (
+            <View style={styles.emptyPanel}>
+              <View style={styles.emptyIconWrap}>
+                <FontAwesome name="tags" size={22} color="#35408E" />
+              </View>
+              <Text style={styles.emptyTitle}>No tagged photos</Text>
+              <Text style={styles.emptyBody}>
+                Photos and moments you&apos;re tagged in will show up in this section.
+              </Text>
+            </View>
+          ) : null}
 
-            <TouchableOpacity
-              style={[styles.menuButton, styles.menuButtonSpaced]}
-              onPress={() => {
-                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                toggleModal('password', true);
-              }}
-            >
-              <FontAwesome name="lock" size={18} color="#35408E" style={styles.menuIcon} />
-              <Text style={styles.menuButtonText}>Change Password</Text>
-            </TouchableOpacity>
+          {activeTab === 'yearbook' ? (
+            <View style={styles.yearbookPanel}>
+              <Text style={styles.panelHeading}>Digital Yearbook</Text>
+              <Text style={styles.aboutText}>
+                {asText(fields.about, 'No motto yet. Open Account Settings to add one.')}
+              </Text>
+              <TouchableOpacity
+                style={styles.yearbookCta}
+                onPress={() => {
+                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                  router.push('/generate-yearbook' as Href);
+                }}
+              >
+                <FontAwesome name="book" size={14} color="#FFFFFF" style={styles.actionIcon} />
+                <Text style={styles.primaryActionText}>Open Yearbook</Text>
+              </TouchableOpacity>
+            </View>
+          ) : null}
 
-            <TouchableOpacity
-              style={[styles.menuButton, styles.menuButtonSpaced, styles.signOutButton]}
-              onPress={() => void handleSignOut()}
-            >
-              <FontAwesome name="sign-out" size={18} color="#FF3B30" style={styles.menuIcon} />
-              <Text style={[styles.menuButtonText, styles.signOutText]}>Sign Out</Text>
-            </TouchableOpacity>
-          </View>
+          {activeTab === 'academic' ? (
+            <View style={styles.academicPanel}>
+              <Text style={styles.panelHeading}>Academic details</Text>
+              <View style={styles.detailRow}>
+                <Text style={styles.detailLabel}>Program</Text>
+                <Text style={styles.detailValue}>{asText(fields.program, '—')}</Text>
+              </View>
+              <View style={styles.detailRow}>
+                <Text style={styles.detailLabel}>Student ID</Text>
+                <Text style={styles.detailValue}>{asText(fields.studentId, '—')}</Text>
+              </View>
+              <View style={styles.detailRow}>
+                <Text style={styles.detailLabel}>Batch</Text>
+                <Text style={styles.detailValue}>{asText(fields.batch, '—')}</Text>
+              </View>
+              <View style={[styles.detailRow, styles.detailRowLast]}>
+                <Text style={styles.detailLabel}>Class</Text>
+                <Text style={styles.detailValue}>{asText(fields.year, '—')}</Text>
+              </View>
+            </View>
+          ) : null}
+
+          {activeTab === 'achievements' ? (
+            <View>
+              <Text style={styles.panelHeading}>Achievements</Text>
+              {achievements.length === 0 ? (
+                <Text style={styles.emptyAchievements}>No achievements yet.</Text>
+              ) : (
+                achievements.map((item, index) => (
+                  <View
+                    key={`ach-${asText(item.id)}-${index}`}
+                    style={index % 2 === 0 ? styles.achievementCardYellow : styles.achievementCardBlue}
+                  >
+                    <View style={styles.achievementInfo}>
+                      <Text
+                        style={
+                          index % 2 === 0
+                            ? styles.achievementTitleYellow
+                            : styles.achievementTitleBlue
+                        }
+                      >
+                        {asText(item.title)}
+                      </Text>
+                      <Text
+                        style={
+                          index % 2 === 0 ? styles.achievementSubYellow : styles.achievementSubBlue
+                        }
+                      >
+                        {asText(item.name) || asText(item.date)}
+                      </Text>
+                    </View>
+                    <FontAwesome
+                      name="bookmark-o"
+                      size={18}
+                      color={index % 2 === 0 ? '#A67C00' : '#35408E'}
+                    />
+                  </View>
+                ))
+              )}
+            </View>
+          ) : null}
+        </View>
+
+        <View style={styles.footerMenu}>
+          <TouchableOpacity
+            style={[styles.menuButton, styles.signOutButton]}
+            onPress={() => void handleSignOut()}
+          >
+            <FontAwesome name="sign-out" size={16} color="#FF3B30" style={styles.menuIcon} />
+            <Text style={[styles.menuButtonText, styles.signOutText]}>Sign Out</Text>
+          </TouchableOpacity>
         </View>
       </ScrollView>
 
-      <Modal
-        visible={isEditModalVisible}
-        transparent
-        animationType="none"
-        onRequestClose={() => toggleModal('edit', false)}
-      >
-        <View style={styles.modalOverlay}>
-          <Animated.View
-            style={[styles.absoluteFill, { backgroundColor: 'rgba(0,0,0,0.5)', opacity: fadeAnim }]}
-          >
-            <TouchableOpacity
-              style={styles.flex}
-              activeOpacity={1}
-              onPress={() => toggleModal('edit', false)}
-            />
-          </Animated.View>
-
-          <Animated.View style={[styles.modalContainer, { transform: [{ translateY: slideAnim }] }]}>
-            <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
-              <View style={styles.modalHeader}>
-                <Text style={styles.modalTitle}>Edit Profile</Text>
-                <TouchableOpacity onPress={() => toggleModal('edit', false)}>
-                  <FontAwesome name="times" size={20} color="#8E8E93" />
-                </TouchableOpacity>
-              </View>
-
-              <ScrollView style={styles.modalBody} showsVerticalScrollIndicator={false}>
-                <View style={styles.editAvatarSection}>
-                  {fields.avatar ? (
-                    <Image source={fields.avatar} style={styles.editAvatar} contentFit="cover" />
-                  ) : (
-                    <View style={[styles.editAvatar, styles.avatarPlaceholder]}>
-                      <FontAwesome name="user" size={36} color="#8E8E93" />
-                    </View>
-                  )}
-                  <TouchableOpacity
-                    style={styles.changePicButton}
-                    onPress={handleChangeAvatar}
-                    disabled={uploadingAvatar}
-                  >
-                    {uploadingAvatar ? (
-                      <ActivityIndicator size="small" color="#35408E" />
-                    ) : (
-                      <>
-                        <FontAwesome name="camera" size={14} color="#35408E" style={styles.menuIcon} />
-                        <Text style={styles.changePicText}>Change Profile Picture</Text>
-                      </>
-                    )}
-                  </TouchableOpacity>
-                </View>
-
-                <Text style={styles.inputLabel}>FULL NAME</Text>
-                <TextInput
-                  style={styles.input}
-                  value={editName}
-                  onChangeText={setEditName}
-                  placeholder="Enter your name"
-                  placeholderTextColor="#C7C7CC"
-                />
-
-                <Text style={styles.inputLabel}>ABOUT / BIO</Text>
-                <TextInput
-                  style={[styles.input, styles.textArea]}
-                  value={editAbout}
-                  onChangeText={setEditAbout}
-                  placeholder="Tell your batchmates about yourself"
-                  placeholderTextColor="#C7C7CC"
-                  multiline
-                />
-
-                {saveError ? <Text style={styles.modalErrorText}>{saveError}</Text> : null}
-
-                <TouchableOpacity
-                  style={[styles.saveButton, saving && styles.saveButtonDisabled]}
-                  disabled={saving}
-                  onPress={() => void handleSaveProfile()}
-                >
-                  {saving ? (
-                    <ActivityIndicator size="small" color="#35408E" />
-                  ) : (
-                    <Text style={styles.saveButtonText}>Save Changes</Text>
-                  )}
-                </TouchableOpacity>
-              </ScrollView>
-            </KeyboardAvoidingView>
-          </Animated.View>
-        </View>
-      </Modal>
-
-      <Modal
-        visible={isPasswordModalVisible}
-        transparent
-        animationType="none"
-        onRequestClose={() => toggleModal('password', false)}
-      >
-        <View style={styles.modalOverlay}>
-          <Animated.View
-            style={[styles.absoluteFill, { backgroundColor: 'rgba(0,0,0,0.5)', opacity: fadeAnim }]}
-          >
-            <TouchableOpacity
-              style={styles.flex}
-              activeOpacity={1}
-              onPress={() => toggleModal('password', false)}
-            />
-          </Animated.View>
-
-          <Animated.View style={[styles.modalContainer, { transform: [{ translateY: slideAnim }] }]}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Change Password</Text>
-              <TouchableOpacity onPress={() => toggleModal('password', false)}>
-                <FontAwesome name="times" size={20} color="#8E8E93" />
-              </TouchableOpacity>
-            </View>
-
-            <View style={styles.modalBody}>
-              <Text style={styles.inputLabel}>CURRENT PASSWORD</Text>
-              <TextInput
-                style={styles.input}
-                secureTextEntry
-                placeholder="••••••••"
-                placeholderTextColor="#C7C7CC"
-                value={currentPassword}
-                onChangeText={setCurrentPassword}
-              />
-              <Text style={styles.inputLabel}>NEW PASSWORD</Text>
-              <TextInput
-                style={styles.input}
-                secureTextEntry
-                placeholder="••••••••"
-                placeholderTextColor="#C7C7CC"
-                value={newPassword}
-                onChangeText={setNewPassword}
-              />
-              <Text style={styles.inputLabel}>CONFIRM NEW PASSWORD</Text>
-              <TextInput
-                style={styles.input}
-                secureTextEntry
-                placeholder="••••••••"
-                placeholderTextColor="#C7C7CC"
-                value={confirmPassword}
-                onChangeText={setConfirmPassword}
-              />
-
-              {passwordError ? <Text style={styles.modalErrorText}>{passwordError}</Text> : null}
-
-              <TouchableOpacity
-                style={[styles.saveButton, updatingPassword && styles.saveButtonDisabled]}
-                disabled={updatingPassword}
-                onPress={() => void handleUpdatePassword()}
-              >
-                {updatingPassword ? (
-                  <ActivityIndicator size="small" color="#35408E" />
-                ) : (
-                  <Text style={styles.saveButtonText}>Update Password</Text>
-                )}
-              </TouchableOpacity>
-            </View>
-          </Animated.View>
-        </View>
-      </Modal>
+      <FaceLoginCameraModal
+        visible={faceCameraVisible}
+        verifying={faceRegistering}
+        title="Register Face"
+        verifyingLabel="Registering…"
+        permissionBody="Allow camera access so we can capture your face for recognition login."
+        closeAccessibilityLabel="Close face registration"
+        secondaryCloseLabel="Cancel"
+        onCapture={handleFaceRegisterCapture}
+        onClose={closeFaceRegistration}
+      />
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#FFFFFF',
-  },
-  centered: {
-    justifyContent: 'center',
+  headerSettingsBtn: {
+    width: 48,
+    height: 48,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 200, 0, 0.35)',
+    backgroundColor: 'rgba(255, 200, 0, 0.08)',
     alignItems: 'center',
-  },
-  loadingText: {
-    marginTop: 12,
-    fontSize: 14,
-    color: '#8E8E93',
+    justifyContent: 'center',
   },
   errorBanner: {
     backgroundColor: '#FFF2F0',
-    padding: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
@@ -726,35 +778,37 @@ const styles = StyleSheet.create({
     color: '#35408E',
     fontWeight: '600',
   },
-  flex: {
-    flex: 1,
-  },
-  absoluteFill: {
-    ...StyleSheet.absoluteFill,
-  },
-  scrollContent: {
-    flexGrow: 1,
-    paddingBottom: 40,
-  },
-  blueHeader: {
-    height: 180,
+  coverWrap: {
+    width: SCREEN_WIDTH,
+    marginHorizontal: -16,
+    height: COVER_HEIGHT,
     backgroundColor: '#35408E',
-    width: '100%',
+    overflow: 'hidden',
+    borderBottomLeftRadius: 4,
+    borderBottomRightRadius: 4,
   },
-  profileInfoSection: {
+  coverImage: {
+    ...StyleSheet.absoluteFill,
+    width: '100%',
+    height: '100%',
+  },
+  coverOverlay: {
+    ...StyleSheet.absoluteFill,
+    backgroundColor: 'rgba(28, 36, 86, 0.35)',
+  },
+  avatarRow: {
     alignItems: 'center',
-    marginTop: -80,
-    paddingHorizontal: 24,
+    marginTop: -AVATAR_OVERLAP,
+    zIndex: 2,
   },
   avatarWrapper: {
     position: 'relative',
-    marginBottom: 20,
   },
   avatar: {
-    width: 160,
-    height: 160,
-    borderRadius: 80,
-    borderWidth: 6,
+    width: AVATAR_SIZE,
+    height: AVATAR_SIZE,
+    borderRadius: AVATAR_SIZE / 2,
+    borderWidth: 4,
     borderColor: '#FFFFFF',
     backgroundColor: '#F0F2F8',
   },
@@ -762,180 +816,287 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
-  cameraBadge: {
+  onlineDot: {
     position: 'absolute',
     bottom: 10,
     right: 10,
-    width: 32,
-    height: 32,
-    borderRadius: 16,
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    backgroundColor: '#22C55E',
+    borderWidth: 3,
+    borderColor: '#FFFFFF',
+  },
+  cameraBadge: {
+    position: 'absolute',
+    bottom: 4,
+    left: 4,
+    width: 28,
+    height: 28,
+    borderRadius: 14,
     backgroundColor: '#FFFFFF',
     borderWidth: 1,
     borderColor: '#E5E7EB',
     justifyContent: 'center',
     alignItems: 'center',
+    shadowColor: '#1C2456',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.12,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  identityCard: {
+    marginTop: 12,
+    paddingTop: 12,
+    paddingBottom: 18,
+    paddingHorizontal: 18,
+    alignItems: 'center',
   },
   userName: {
-    fontSize: 28,
-    fontWeight: 'bold',
+    fontSize: 24,
+    fontWeight: '800',
     color: '#1C1C1E',
-    marginBottom: 6,
     textAlign: 'center',
+    marginBottom: 4,
+  },
+  userSchool: {
+    fontSize: 13,
+    color: '#5C6B8A',
+    textAlign: 'center',
+    marginBottom: 2,
+    opacity: 0.9,
   },
   userDegree: {
-    fontSize: 18,
+    fontSize: 15,
     color: '#35408E',
-    fontWeight: '500',
-    marginBottom: 4,
-  },
-  userYear: {
-    fontSize: 14,
-    color: '#8E8E93',
-    marginBottom: 4,
-  },
-  userEmail: {
-    fontSize: 13,
-    color: '#35408E',
+    fontWeight: '600',
+    textAlign: 'center',
     marginBottom: 2,
   },
-  userMeta: {
+  userEmail: {
     fontSize: 12,
     color: '#8E8E93',
-    marginBottom: 8,
+    textAlign: 'center',
+    marginTop: 2,
+    opacity: 0.85,
   },
-  subscriptionBadge: {
+  badgeRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'center',
+    gap: 8,
+    marginTop: 12,
+    marginBottom: 14,
+  },
+  statusBadge: {
     flexDirection: 'row',
     alignItems: 'center',
-    alignSelf: 'center',
-    paddingHorizontal: 12,
+    paddingHorizontal: 11,
     paddingVertical: 6,
     borderRadius: 20,
-    marginTop: 4,
-    marginBottom: 16,
     borderWidth: 1,
   },
-  subscriptionBadgeActive: {
-    backgroundColor: '#FFFBE6',
-    borderColor: '#FFE58F',
+  badgeIcon: {
+    marginRight: 5,
   },
-  subscriptionBadgeFree: {
+  statusBadgeText: {
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  graduateBadge: {
+    backgroundColor: '#F0F5FF',
+    borderColor: '#D6E4FF',
+  },
+  graduateBadgeText: {
+    color: '#1D39C4',
+  },
+  studentBadge: {
     backgroundColor: '#F0F2F8',
     borderColor: '#D5DBF0',
   },
-  subscriptionIcon: {
-    marginRight: 6,
+  studentBadgeText: {
+    color: '#35408E',
   },
-  subscriptionText: {
+  premiumBadge: {
+    backgroundColor: '#FFFBE6',
+    borderColor: '#FFE58F',
+  },
+  premiumBadgeText: {
+    color: '#874D00',
+  },
+  freeBadge: {
+    backgroundColor: '#F7F8FC',
+    borderColor: '#E2E6F0',
+  },
+  freeBadgeText: {
+    color: '#5C6B8A',
+  },
+  actionRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'center',
+    gap: 8,
+    width: '100%',
+  },
+  primaryAction: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#35408E',
+    paddingHorizontal: 16,
+    paddingVertical: 11,
+    borderRadius: 12,
+  },
+  primaryActionText: {
+    color: '#FFFFFF',
     fontSize: 13,
     fontWeight: '700',
   },
-  subscriptionTextActive: {
-    color: '#874D00',
-  },
-  subscriptionTextFree: {
-    color: '#35408E',
-  },
-  upgradeBanner: {
-    width: '100%',
-    marginTop: 4,
-    marginBottom: 8,
-    backgroundColor: '#35408E',
-    borderRadius: 16,
-    paddingVertical: 16,
-    paddingHorizontal: 16,
+  secondaryAction: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
+    backgroundColor: '#F0F2F8',
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#D5DBF0',
   },
-  upgradeBannerIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: 'rgba(255, 200, 0, 0.18)',
+  secondaryActionText: {
+    color: '#35408E',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  upgradeAction: {
+    flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
+    backgroundColor: '#FFFBE6',
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#FFE58F',
   },
-  upgradeBannerCopy: {
-    flex: 1,
+  upgradeActionText: {
+    color: '#874D00',
+    fontSize: 13,
+    fontWeight: '700',
   },
-  upgradeBannerTitle: {
-    color: '#FFFFFF',
-    fontSize: 16,
-    fontWeight: 'bold',
-    marginBottom: 2,
-  },
-  upgradeBannerBody: {
-    color: 'rgba(255,255,255,0.78)',
-    fontSize: 12,
-    lineHeight: 17,
+  actionIcon: {
+    marginRight: 6,
   },
   premiumActiveBanner: {
     width: '100%',
-    marginTop: 4,
-    marginBottom: 8,
+    marginTop: 14,
     backgroundColor: '#FFFBE6',
-    borderRadius: 16,
+    borderRadius: 12,
     borderWidth: 1,
     borderColor: '#FFE58F',
-    paddingVertical: 14,
-    paddingHorizontal: 16,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
-  },
-  premiumActiveCopy: {
-    flex: 1,
-  },
-  premiumActiveTitle: {
-    color: '#874D00',
-    fontSize: 15,
-    fontWeight: 'bold',
-    marginBottom: 2,
+    gap: 10,
   },
   premiumActiveBody: {
+    flex: 1,
     color: '#A67C00',
     fontSize: 12,
     lineHeight: 17,
+    fontWeight: '500',
   },
-  contentSection: {
-    paddingHorizontal: 24,
-    paddingBottom: 40,
+  statsSpacing: {
+    marginBottom: 14,
+  },
+  panelCard: {
+    minHeight: 160,
+    padding: 18,
+  },
+  panelHeading: {
+    fontSize: 15,
+    fontWeight: '800',
+    color: '#1C1C1E',
+    marginBottom: 12,
+  },
+  emptyPanel: {
+    alignItems: 'center',
+    paddingVertical: 18,
+    paddingHorizontal: 8,
+  },
+  emptyIconWrap: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    backgroundColor: '#F0F2F8',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 12,
+  },
+  emptyTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#1C1C1E',
+    marginBottom: 6,
+  },
+  emptyBody: {
+    fontSize: 13,
+    color: '#8E8E93',
+    textAlign: 'center',
+    lineHeight: 19,
+    opacity: 0.9,
+  },
+  yearbookPanel: {
+    gap: 4,
+  },
+  yearbookCta: {
     marginTop: 16,
-  },
-  sectionHeader: {
+    alignSelf: 'flex-start',
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 16,
-  },
-  achievementsHeader: {
-    marginTop: 30,
-  },
-  sectionIcon: {
-    marginRight: 10,
-  },
-  sectionTitle: {
-    fontSize: 14,
-    fontWeight: 'bold',
-    color: '#1C1C1E',
-    letterSpacing: 0.5,
+    backgroundColor: '#35408E',
+    paddingHorizontal: 16,
+    paddingVertical: 11,
+    borderRadius: 12,
   },
   aboutText: {
     fontSize: 14,
     color: '#4A4A4A',
     lineHeight: 22,
   },
+  academicPanel: {},
+  detailRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#E8ECF5',
+  },
+  detailRowLast: {
+    borderBottomWidth: 0,
+  },
+  detailLabel: {
+    fontSize: 13,
+    color: '#8E8E93',
+    fontWeight: '600',
+  },
+  detailValue: {
+    fontSize: 14,
+    color: '#1C1C1E',
+    fontWeight: '700',
+    maxWidth: '62%',
+    textAlign: 'right',
+  },
   emptyAchievements: {
     fontSize: 14,
     color: '#8E8E93',
-    marginBottom: 12,
   },
   achievementCardYellow: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#FFFBE6',
-    padding: 16,
-    borderRadius: 16,
-    marginBottom: 12,
+    padding: 14,
+    borderRadius: 14,
+    marginBottom: 10,
     borderWidth: 1,
     borderColor: '#FFF1B8',
   },
@@ -943,9 +1104,9 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#F0F5FF',
-    padding: 16,
-    borderRadius: 16,
-    marginBottom: 12,
+    padding: 14,
+    borderRadius: 14,
+    marginBottom: 10,
     borderWidth: 1,
     borderColor: '#D6E4FF',
   },
@@ -973,27 +1134,23 @@ const styles = StyleSheet.create({
     color: '#2F54EB',
   },
   footerMenu: {
-    marginTop: 30,
-    borderTopWidth: 1,
-    borderTopColor: '#F0F2F8',
-    paddingTop: 20,
+    marginTop: 4,
+    marginBottom: 8,
   },
   menuButton: {
     width: '100%',
     height: 50,
     backgroundColor: '#FFFFFF',
-    borderRadius: 12,
+    borderRadius: 14,
     flexDirection: 'row',
     justifyContent: 'center',
     alignItems: 'center',
     borderWidth: 1,
     borderColor: '#35408E',
   },
-  menuButtonSpaced: {
-    marginTop: 12,
-  },
   signOutButton: {
-    borderColor: '#FF3B30',
+    borderColor: '#FFD0CD',
+    backgroundColor: '#FFF7F6',
   },
   menuIcon: {
     marginRight: 8,
@@ -1005,101 +1162,5 @@ const styles = StyleSheet.create({
   },
   signOutText: {
     color: '#FF3B30',
-  },
-  modalOverlay: {
-    flex: 1,
-    justifyContent: 'flex-end',
-  },
-  modalContainer: {
-    backgroundColor: 'white',
-    borderTopLeftRadius: 32,
-    borderTopRightRadius: 32,
-    padding: 24,
-    paddingBottom: 40,
-    maxHeight: height * 0.9,
-  },
-  modalHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 24,
-  },
-  modalTitle: {
-    fontSize: 20,
-    fontWeight: 'bold',
-    color: '#1C1C1E',
-  },
-  modalBody: {
-    marginBottom: 20,
-  },
-  modalErrorText: {
-    fontSize: 13,
-    color: '#FF3B30',
-    marginTop: 12,
-  },
-  editAvatarSection: {
-    alignItems: 'center',
-    marginBottom: 24,
-  },
-  editAvatar: {
-    width: 100,
-    height: 100,
-    borderRadius: 50,
-    marginBottom: 16,
-    borderWidth: 3,
-    borderColor: '#F0F2F8',
-  },
-  changePicButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#F0F2F8',
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: 20,
-    minHeight: 36,
-  },
-  changePicText: {
-    fontSize: 12,
-    color: '#35408E',
-    fontWeight: 'bold',
-  },
-  inputLabel: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#8E8E93',
-    marginBottom: 8,
-    marginTop: 16,
-  },
-  input: {
-    backgroundColor: '#F8F9FB',
-    borderWidth: 1,
-    borderColor: '#E5E7EB',
-    borderRadius: 12,
-    padding: 16,
-    fontSize: 16,
-    color: '#1C1C1E',
-  },
-  textArea: {
-    height: 100,
-    textAlignVertical: 'top',
-  },
-  saveButton: {
-    backgroundColor: '#FFFFFF',
-    borderWidth: 1,
-    borderColor: '#35408E',
-    height: 55,
-    borderRadius: 16,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginTop: 32,
-    marginBottom: 20,
-  },
-  saveButtonDisabled: {
-    opacity: 0.6,
-  },
-  saveButtonText: {
-    color: '#35408E',
-    fontWeight: 'bold',
-    fontSize: 16,
   },
 });

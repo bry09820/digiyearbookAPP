@@ -8,7 +8,9 @@
     "android": "expo start --android",
     "ios": "expo start --ios",
     "web": "expo start --web",
-    "lint": "expo lint"
+    "lint": "expo lint",
+    "build:apk": "eas build -p android --profile preview",
+    "build:apk:production": "eas build -p android --profile production"
   },
   "dependencies": {
     "@expo/ngrok": "^4.1.3",
@@ -18,11 +20,13 @@
     "@react-navigation/native": "^7.1.8",
     "axios": "^1.20.0",
     "expo": "~57.0.0",
+    "expo-camera": "~57.0.5",
     "expo-constants": "~57.0.19",
     "expo-font": "~57.0.4",
     "expo-haptics": "~57.0.3",
     "expo-image": "~57.0.5",
     "expo-image-picker": "~57.0.19",
+    "expo-linear-gradient": "~57.0.2",
     "expo-linking": "~57.0.10",
     "expo-local-authentication": "~57.0.3",
     "expo-router": "~57.0.22",

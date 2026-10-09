@@ -17,6 +17,12 @@ export default function TabLayout() {
         }}
       />
       <Tabs.Screen
+        name="messages"
+        options={{
+          title: 'Messages',
+        }}
+      />
+      <Tabs.Screen
         name="directory"
         options={{
           title: 'Directory',

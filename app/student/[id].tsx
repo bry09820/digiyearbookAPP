@@ -6,8 +6,6 @@ import {
   ScrollView,
   TouchableOpacity,
   ActivityIndicator,
-  Linking,
-  Alert,
   Share,
 } from 'react-native';
 import { Image } from 'expo-image';
@@ -26,6 +24,7 @@ import { asText } from '@/utils/text';
 import { fallbackTopInset } from '@/utils/safeArea';
 import { resolveSubscription } from '@/utils/subscription';
 import { UpgradePrompt } from '@/components/UpgradePrompt';
+import { ChatModal, type ChatPeer } from '@/modules/chat';
 
 function paramId(value: string | string[] | undefined): string {
   if (Array.isArray(value)) return asText(value[0]);
@@ -43,6 +42,8 @@ export default function StudentProfileScreen() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [upgradeVisible, setUpgradeVisible] = useState(false);
+  const [chatVisible, setChatVisible] = useState(false);
+  const [chatPeer, setChatPeer] = useState<ChatPeer | null>(null);
 
   const load = useCallback(async () => {
     if (!studentId) {
@@ -108,28 +109,20 @@ export default function StudentProfileScreen() {
     void load();
   }, [load]);
 
-  const handleMessage = async () => {
-    const email = asText(student?.email);
-    if (!email) {
-      Alert.alert(
-        'Messaging unavailable',
-        'This student has not shared a public email address yet.',
-      );
-      return;
-    }
+  /** Messaging is free for every registered student — never gated by subscription. */
+  const handleMessage = () => {
+    if (!student) return;
+    const peerId = asText(student.id);
+    if (!peerId) return;
 
-    const url = `mailto:${email}?subject=${encodeURIComponent('Hello from NU Lipa Yearbook')}`;
-    try {
-      const can = await Linking.canOpenURL(url);
-      if (!can) {
-        Alert.alert('Cannot open mail', `Email this student at ${email}`);
-        return;
-      }
-      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      await Linking.openURL(url);
-    } catch {
-      Alert.alert('Cannot open mail', `Email this student at ${email}`);
-    }
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setChatPeer({
+      id: peerId,
+      name: asText(student.name, 'Student'),
+      image: student.image,
+      kind: 'student',
+    });
+    setChatVisible(true);
   };
 
   const handleShare = async () => {
@@ -160,6 +153,15 @@ export default function StudentProfileScreen() {
         onClose={() => setUpgradeVisible(false)}
         onUpgraded={() => {
           void load();
+        }}
+      />
+
+      <ChatModal
+        visible={chatVisible}
+        peer={chatPeer}
+        onClose={() => {
+          setChatVisible(false);
+          setChatPeer(null);
         }}
       />
 
@@ -226,7 +228,7 @@ export default function StudentProfileScreen() {
                 ) : null}
 
                 <View style={styles.actions}>
-                  <TouchableOpacity style={styles.primaryAction} onPress={() => void handleMessage()}>
+                  <TouchableOpacity style={styles.primaryAction} onPress={handleMessage}>
                     <FontAwesome name="envelope" size={14} color="#fff" style={styles.actionIcon} />
                     <Text style={styles.primaryActionText}>Message</Text>
                   </TouchableOpacity>
@@ -242,8 +244,13 @@ export default function StudentProfileScreen() {
                 <Text style={styles.lockedTitle}>Subscribers see full profiles</Text>
                 <Text style={styles.lockedBody}>
                   Free accounts can only view a student&apos;s name. Upgrade to Standard or Premium
-                  to unlock photos, contact details, bio, and achievements.
+                  to unlock photos, contact details, bio, and achievements. Messaging stays free for
+                  every registered student.
                 </Text>
+                <TouchableOpacity style={styles.primaryAction} onPress={handleMessage}>
+                  <FontAwesome name="envelope" size={14} color="#fff" style={styles.actionIcon} />
+                  <Text style={styles.primaryActionText}>Message</Text>
+                </TouchableOpacity>
                 <TouchableOpacity
                   style={styles.upgradeButton}
                   onPress={() => {
@@ -251,7 +258,7 @@ export default function StudentProfileScreen() {
                     setUpgradeVisible(true);
                   }}
                 >
-                  <Text style={styles.primaryActionText}>Upgrade to unlock</Text>
+                  <Text style={styles.upgradeButtonText}>Upgrade to unlock</Text>
                 </TouchableOpacity>
               </View>
             )}
@@ -423,17 +430,25 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     paddingHorizontal: 12,
+    width: '100%',
   },
   upgradeButton: {
     width: '100%',
     height: 50,
-    backgroundColor: '#35408E',
+    backgroundColor: 'white',
     borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#35408E',
     flexDirection: 'row',
     justifyContent: 'center',
     alignItems: 'center',
     paddingHorizontal: 12,
     marginTop: 4,
+  },
+  upgradeButtonText: {
+    color: '#35408E',
+    fontWeight: 'bold',
+    fontSize: 14,
   },
   primaryActionText: {
     color: 'white',

@@ -1,6 +1,17 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { View, Text, StyleSheet, ScrollView, SafeAreaView, TouchableOpacity, Modal, Animated, Dimensions, ActivityIndicator } from 'react-native';
-import { Image } from 'expo-image';
+import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  ScrollView,
+  SafeAreaView,
+  TouchableOpacity,
+  Modal,
+  Animated,
+  Dimensions,
+  ActivityIndicator,
+  Alert,
+} from 'react-native';
 import { FontAwesome } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { StatusBar } from 'expo-status-bar';
@@ -8,6 +19,16 @@ import { getApiErrorMessage } from '@/services/api';
 import { yearbookService } from '@/services/yearbook';
 import type { AchievementItem } from '@/services/yearbook';
 import { ScreenHeader } from '@/components/ScreenHeader';
+import { ChatModal, type ChatPeer } from '@/modules/chat';
+import {
+  SummaryStats,
+  SearchField,
+  FilterPills,
+  InitialsAvatar,
+  premiumStyles,
+  type FilterPill,
+} from '@/components/premium';
+import { asText } from '@/utils/text';
 
 const { height } = Dimensions.get('window');
 
@@ -21,8 +42,12 @@ export default function AchievementsScreen() {
   const [categories, setCategories] = useState<AchievementCategory[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [search, setSearch] = useState('');
+  const [activeCategory, setActiveCategory] = useState('All');
   const [selectedAchievement, setSelectedAchievement] = useState<AchievementItem | null>(null);
   const [isModalVisible, setIsModalVisible] = useState(false);
+  const [chatVisible, setChatVisible] = useState(false);
+  const [chatPeer, setChatPeer] = useState<ChatPeer | null>(null);
 
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const slideAnim = useRef(new Animated.Value(height)).current;
@@ -76,6 +101,48 @@ export default function AchievementsScreen() {
     void loadAchievements();
   }, [loadAchievements]);
 
+  const filterPills: FilterPill[] = useMemo(() => {
+    const pills: FilterPill[] = [{ key: 'all', label: 'All', value: 'All' }];
+    categories.forEach((cat) => {
+      pills.push({
+        key: cat.category,
+        label: cat.category,
+        value: cat.category,
+      });
+    });
+    return pills;
+  }, [categories]);
+
+  const filteredCategories = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return categories
+      .filter((cat) => activeCategory === 'All' || cat.category === activeCategory)
+      .map((cat) => ({
+        ...cat,
+        items: cat.items.filter((item) => {
+          if (!q) return true;
+          return (
+            asText(item.title).toLowerCase().includes(q) ||
+            asText(item.name).toLowerCase().includes(q) ||
+            asText(item.desc).toLowerCase().includes(q)
+          );
+        }),
+      }))
+      .filter((cat) => cat.items.length > 0);
+  }, [categories, activeCategory, search]);
+
+  const totalItems = categories.reduce((sum, cat) => sum + cat.items.length, 0);
+  const showingItems = filteredCategories.reduce((sum, cat) => sum + cat.items.length, 0);
+
+  const stats = useMemo(
+    () => [
+      { key: 'awards', label: 'Awards', value: totalItems },
+      { key: 'categories', label: 'Categories', value: categories.length },
+      { key: 'showing', label: 'Showing', value: showingItems },
+    ],
+    [totalItems, categories.length, showingItems],
+  );
+
   const toggleModal = (visible: boolean, item: AchievementItem | null = null) => {
     if (visible) {
       setSelectedAchievement(item);
@@ -95,41 +162,59 @@ export default function AchievementsScreen() {
     }
   };
 
-  const totalItems = categories.reduce((sum, cat) => sum + cat.items.length, 0);
-
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={premiumStyles.screen}>
       <StatusBar style="light" />
+      <ScreenHeader
+        title="Awards"
+        subtitle="Hall of Fame · scholar achievements"
+        icon="trophy"
+      />
 
-      <ScreenHeader title="Achievements" />
+      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={premiumStyles.scrollContent}>
+        <SummaryStats items={stats} />
 
-      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
-        <View style={styles.pageHeader}>
-          <Text style={styles.pageTitle}>Hall of Fame</Text>
-          <Text style={styles.pageSubtitle}>Celebrating the outstanding achievements of our scholars</Text>
-        </View>
+        <SearchField
+          value={search}
+          onChangeText={setSearch}
+          placeholder="Search awards or recipients…"
+        />
+
+        <FilterPills
+          items={filterPills}
+          activeValue={activeCategory}
+          onChange={setActiveCategory}
+        />
 
         {loading ? (
-          <View style={styles.stateContainer}>
+          <View style={premiumStyles.centerState}>
             <ActivityIndicator size="large" color="#35408E" />
-            <Text style={styles.stateText}>Loading achievements…</Text>
+            <Text style={premiumStyles.mutedText}>Loading achievements…</Text>
           </View>
         ) : error ? (
-          <View style={styles.stateContainer}>
-            <Text style={styles.errorText}>{error}</Text>
-            <TouchableOpacity style={styles.retryButton} onPress={() => void loadAchievements()}>
-              <Text style={styles.retryText}>Retry</Text>
+          <View style={premiumStyles.centerState}>
+            <Text style={premiumStyles.errorText}>{error}</Text>
+            <TouchableOpacity
+              style={premiumStyles.primaryButton}
+              onPress={() => void loadAchievements()}
+            >
+              <Text style={premiumStyles.primaryButtonText}>Retry</Text>
             </TouchableOpacity>
           </View>
-        ) : totalItems === 0 ? (
-          <View style={styles.stateContainer}>
-            <Text style={styles.stateText}>No achievements to display yet.</Text>
+        ) : showingItems === 0 ? (
+          <View style={premiumStyles.centerState}>
+            <Text style={premiumStyles.mutedText}>No achievements to display yet.</Text>
           </View>
         ) : (
-          categories.map((section) => (
+          filteredCategories.map((section) => (
             <View key={section.category} style={styles.section}>
               <View style={styles.categoryLabel}>
-                <FontAwesome name={section.icon} size={14} color="#FFC800" style={styles.categoryIcon} />
+                <FontAwesome
+                  name={section.icon}
+                  size={12}
+                  color="#FFC800"
+                  style={styles.categoryIcon}
+                />
                 <Text style={styles.categoryText}>{section.category}</Text>
               </View>
 
@@ -138,28 +223,27 @@ export default function AchievementsScreen() {
                   key={String(item.id)}
                   style={styles.achievementCard}
                   onPress={() => {
-                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                     toggleModal(true, item);
                   }}
+                  activeOpacity={0.88}
                 >
                   <View style={styles.cardTop}>
                     <View style={styles.imageWrapper}>
-                      {item.image ? (
-                        <Image source={item.image} style={styles.avatar} contentFit="cover" transition={500} />
-                      ) : (
-                        <View style={[styles.avatar, styles.avatarPlaceholder]}>
-                          <FontAwesome name="user" size={20} color="#8E8E93" />
-                        </View>
-                      )}
+                      <InitialsAvatar name={item.name || item.title} image={item.image} size={48} />
                       <View style={styles.medalIcon}>
-                        <FontAwesome name="trophy" size={10} color="white" />
+                        <FontAwesome name="trophy" size={9} color="white" />
                       </View>
                     </View>
                     <View style={styles.titles}>
-                      <Text style={styles.itemTitle}>{item.title}</Text>
-                      <Text style={styles.itemName}>{item.name}</Text>
+                      <Text style={styles.itemTitle} numberOfLines={1}>
+                        {item.title}
+                      </Text>
+                      <Text style={styles.itemName} numberOfLines={1}>
+                        {item.name}
+                      </Text>
                     </View>
-                    <FontAwesome name="chevron-right" size={12} color="#D1D1D6" style={{ marginLeft: 'auto' }} />
+                    <FontAwesome name="chevron-right" size={12} color="#D1D1D6" />
                   </View>
 
                   <View style={styles.cardBody}>
@@ -170,7 +254,9 @@ export default function AchievementsScreen() {
                       <Text style={styles.itemDate}>{item.date}</Text>
                       <TouchableOpacity
                         style={styles.shareButton}
-                        onPress={() => Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium)}
+                        onPress={() =>
+                          void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium)
+                        }
                       >
                         <FontAwesome name="share-alt" size={12} color="#35408E" />
                       </TouchableOpacity>
@@ -185,12 +271,14 @@ export default function AchievementsScreen() {
 
       <Modal visible={isModalVisible} transparent animationType="none" onRequestClose={() => toggleModal(false)}>
         <View style={styles.modalOverlay}>
-          <Animated.View style={[styles.absoluteFill, { backgroundColor: 'rgba(0,0,0,0.5)', opacity: fadeAnim }]}>
+          <Animated.View
+            style={[styles.absoluteFill, { backgroundColor: 'rgba(0,0,0,0.5)', opacity: fadeAnim }]}
+          >
             <TouchableOpacity
               style={{ flex: 1 }}
               activeOpacity={1}
               onPress={() => {
-                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                 toggleModal(false);
               }}
             />
@@ -203,7 +291,7 @@ export default function AchievementsScreen() {
               </View>
               <TouchableOpacity
                 onPress={() => {
-                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                  void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                   toggleModal(false);
                 }}
                 style={styles.modalClose}
@@ -217,13 +305,11 @@ export default function AchievementsScreen() {
               <Text style={styles.modalSubtitle}>AWARD RECIPIENT</Text>
 
               <View style={styles.recipientCard}>
-                {selectedAchievement?.image ? (
-                  <Image source={selectedAchievement.image} style={styles.recipientAvatar} />
-                ) : (
-                  <View style={[styles.recipientAvatar, styles.avatarPlaceholder]}>
-                    <FontAwesome name="user" size={22} color="#8E8E93" />
-                  </View>
-                )}
+                <InitialsAvatar
+                  name={selectedAchievement?.name}
+                  image={selectedAchievement?.image}
+                  size={50}
+                />
                 <View style={styles.recipientInfo}>
                   <Text style={styles.recipientName}>{selectedAchievement?.name}</Text>
                   <Text style={styles.recipientDate}>Awarded on {selectedAchievement?.date}</Text>
@@ -233,18 +319,38 @@ export default function AchievementsScreen() {
               <View style={styles.divider} />
 
               <Text style={styles.modalSubtitle}>CITATION</Text>
-              <Text style={styles.modalDesc}>{selectedAchievement?.desc || 'No description available.'}</Text>
+              <Text style={styles.modalDesc}>
+                {selectedAchievement?.desc || 'No description available.'}
+              </Text>
 
               <TouchableOpacity
                 style={styles.primaryButton}
-                onPress={() => Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success)}
+                onPress={() => {
+                  const peerId = asText(selectedAchievement?.id);
+                  const name = asText(selectedAchievement?.name);
+                  if (!peerId || !name || name.toLowerCase() === 'you') {
+                    Alert.alert(
+                      'Messaging unavailable',
+                      'This achievement is not linked to another student you can message.',
+                    );
+                    return;
+                  }
+                  void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                  setChatPeer({
+                    id: peerId,
+                    name,
+                    image: selectedAchievement?.image ?? null,
+                    kind: 'student',
+                  });
+                  setChatVisible(true);
+                }}
               >
                 <Text style={styles.primaryButtonText}>Message Recipient</Text>
               </TouchableOpacity>
 
               <TouchableOpacity
                 style={styles.secondaryButton}
-                onPress={() => Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium)}
+                onPress={() => void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium)}
               >
                 <Text style={styles.secondaryButtonText}>Share Achievement</Text>
               </TouchableOpacity>
@@ -252,122 +358,73 @@ export default function AchievementsScreen() {
           </Animated.View>
         </View>
       </Modal>
+
+      <ChatModal
+        visible={chatVisible}
+        peer={chatPeer}
+        onClose={() => {
+          setChatVisible(false);
+          setChatPeer(null);
+        }}
+      />
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#F8F9FB',
-  },
-  scrollContent: {
-    padding: 24,
-    paddingBottom: 100,
-  },
-  pageHeader: {
-    marginBottom: 32,
-  },
-  pageTitle: {
-    fontSize: 28,
-    fontWeight: 'bold',
-    color: '#1C1C1E',
-  },
-  pageSubtitle: {
-    fontSize: 14,
-    color: '#8E8E93',
-    marginTop: 4,
-  },
-  stateContainer: {
-    alignItems: 'center',
-    paddingVertical: 48,
-    gap: 12,
-  },
-  stateText: {
-    fontSize: 14,
-    color: '#8E8E93',
-    textAlign: 'center',
-  },
-  errorText: {
-    fontSize: 14,
-    color: '#FF3B30',
-    textAlign: 'center',
-    paddingHorizontal: 24,
-  },
-  retryButton: {
-    paddingHorizontal: 20,
-    paddingVertical: 10,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: '#35408E',
-  },
-  retryText: {
-    color: '#35408E',
-    fontWeight: 'bold',
-    fontSize: 14,
-  },
   section: {
-    marginBottom: 32,
+    marginBottom: 18,
   },
   categoryLabel: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 16,
-    backgroundColor: '#35408E',
+    marginBottom: 12,
+    backgroundColor: '#1C2456',
     alignSelf: 'flex-start',
     paddingHorizontal: 12,
-    paddingVertical: 6,
+    paddingVertical: 7,
     borderRadius: 12,
   },
   categoryIcon: {
-    marginRight: 8,
+    marginRight: 7,
   },
   categoryText: {
-    fontSize: 12,
-    fontWeight: 'bold',
+    fontSize: 11,
+    fontWeight: '800',
     color: 'white',
     textTransform: 'uppercase',
+    letterSpacing: 0.4,
   },
   achievementCard: {
-    backgroundColor: 'white',
-    borderRadius: 24,
-    padding: 20,
-    marginBottom: 16,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.03,
-    shadowRadius: 10,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 18,
+    padding: 14,
+    marginBottom: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(53, 64, 142, 0.08)',
+    shadowColor: '#1C2456',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.06,
+    shadowRadius: 12,
     elevation: 3,
-    borderWidth: 1,
-    borderColor: '#FFFFFF',
   },
   cardTop: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 16,
+    marginBottom: 12,
+    gap: 12,
   },
   imageWrapper: {
     position: 'relative',
-    marginRight: 16,
-  },
-  avatar: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    backgroundColor: '#F0F2F8',
-  },
-  avatarPlaceholder: {
-    justifyContent: 'center',
-    alignItems: 'center',
   },
   medalIcon: {
     position: 'absolute',
     bottom: -2,
     right: -2,
     backgroundColor: '#FFC800',
-    width: 20,
-    height: 20,
-    borderRadius: 10,
+    width: 18,
+    height: 18,
+    borderRadius: 9,
     justifyContent: 'center',
     alignItems: 'center',
     borderWidth: 2,
@@ -377,25 +434,26 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   itemTitle: {
-    fontSize: 16,
-    fontWeight: 'bold',
+    fontSize: 15,
+    fontWeight: '800',
     color: '#1C1C1E',
   },
   itemName: {
-    fontSize: 14,
+    fontSize: 13,
     color: '#35408E',
-    fontWeight: '500',
+    fontWeight: '600',
+    marginTop: 2,
   },
   cardBody: {
-    borderTopWidth: 1,
-    borderTopColor: '#F2F2F7',
-    paddingTop: 16,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: '#E8ECF5',
+    paddingTop: 12,
   },
   itemDesc: {
-    fontSize: 14,
+    fontSize: 13,
     color: '#4A4A4A',
-    lineHeight: 20,
-    marginBottom: 16,
+    lineHeight: 19,
+    marginBottom: 12,
   },
   cardFooter: {
     flexDirection: 'row',
@@ -403,9 +461,9 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   itemDate: {
-    fontSize: 12,
+    fontSize: 11,
     color: '#8E8E93',
-    fontWeight: '600',
+    fontWeight: '700',
   },
   shareButton: {
     width: 32,
@@ -424,8 +482,8 @@ const styles = StyleSheet.create({
   },
   modalContainer: {
     backgroundColor: 'white',
-    borderTopLeftRadius: 32,
-    borderTopRightRadius: 32,
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
     padding: 24,
     maxHeight: height * 0.85,
   },
@@ -450,14 +508,14 @@ const styles = StyleSheet.create({
     marginBottom: 20,
   },
   modalTitle: {
-    fontSize: 24,
-    fontWeight: 'bold',
+    fontSize: 22,
+    fontWeight: '800',
     color: '#1C1C1E',
-    marginBottom: 24,
+    marginBottom: 20,
   },
   modalSubtitle: {
-    fontSize: 12,
-    fontWeight: 'bold',
+    fontSize: 11,
+    fontWeight: '800',
     color: '#8E8E93',
     letterSpacing: 1,
     marginBottom: 12,
@@ -465,72 +523,62 @@ const styles = StyleSheet.create({
   recipientCard: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#F8F9FB',
-    padding: 16,
-    borderRadius: 20,
-    marginBottom: 24,
-  },
-  recipientAvatar: {
-    width: 50,
-    height: 50,
-    borderRadius: 25,
-    marginRight: 16,
-    backgroundColor: '#F0F2F8',
+    backgroundColor: '#F4F6FB',
+    padding: 14,
+    borderRadius: 16,
+    marginBottom: 20,
+    gap: 14,
   },
   recipientInfo: {
     flex: 1,
   },
   recipientName: {
-    fontSize: 17,
-    fontWeight: 'bold',
+    fontSize: 16,
+    fontWeight: '800',
     color: '#1C1C1E',
   },
   recipientDate: {
-    fontSize: 13,
+    fontSize: 12,
     color: '#8E8E93',
+    marginTop: 2,
   },
   divider: {
-    height: 1,
-    backgroundColor: '#F2F2F7',
-    marginBottom: 24,
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: '#E8ECF5',
+    marginBottom: 20,
   },
   modalDesc: {
-    fontSize: 16,
+    fontSize: 15,
     color: '#4A4A4A',
-    lineHeight: 26,
-    marginBottom: 32,
+    lineHeight: 24,
+    marginBottom: 28,
   },
   primaryButton: {
     backgroundColor: '#35408E',
-    height: 56,
-    borderRadius: 16,
+    height: 52,
+    borderRadius: 14,
     justifyContent: 'center',
     alignItems: 'center',
-    marginBottom: 12,
-    shadowColor: '#35408E',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.2,
-    shadowRadius: 8,
-    elevation: 4,
+    marginBottom: 10,
   },
   primaryButtonText: {
     color: 'white',
-    fontWeight: 'bold',
-    fontSize: 16,
+    fontWeight: '700',
+    fontSize: 15,
   },
   secondaryButton: {
     backgroundColor: 'white',
-    height: 56,
-    borderRadius: 16,
+    height: 52,
+    borderRadius: 14,
     justifyContent: 'center',
     alignItems: 'center',
     borderWidth: 1,
     borderColor: '#E5E7EB',
-    marginBottom: 20,
+    marginBottom: 16,
   },
   secondaryButtonText: {
     color: '#1C1C1E',
-    fontWeight: 'bold',
-    fontSize: 16,
+    fontWeight: '700',
+    fontSize: 15,
   },
 });
